@@ -2,6 +2,9 @@
 
 Self-hosted Obsidian vault sync — fresh rewrite of eari-sync.
 
+- **Plugin** (this repo): Obsidian client, works on desktop + mobile
+- **Server** (Termux standalone): https://github.com/earify/syncify-server
+
 ## Structure
 
 - `shared/` — protocol types (wire-compatible with eari-sync v1 servers)
