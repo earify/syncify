@@ -6,21 +6,20 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url)); // <repo>/scripts
 const repo = join(here, "..");
-const pluginDir = join(repo, "plugin");
 
 const VAULT = process.env.SYNCIFY_VAULT ?? "D:\\.working\\obsidianify";
 const target = join(VAULT, ".obsidian", "plugins", "syncify");
 
+// standard Obsidian layout: main.js / manifest.json / styles.css at repo root
 const files = ["main.js", "manifest.json", "styles.css"];
 for (const f of files) {
-  const src = join(pluginDir, f);
-  if (!existsSync(src)) {
-    console.error(`missing ${src} — run "npm run build -w plugin" first`);
+  if (!existsSync(join(repo, f))) {
+    console.error(`missing ${join(repo, f)} — run "npm run build -w plugin" first`);
     process.exit(1);
   }
 }
 mkdirSync(target, { recursive: true });
-for (const f of files) copyFileSync(join(pluginDir, f), join(target, f));
+for (const f of files) copyFileSync(join(repo, f), join(target, f));
 
 // seed data.json once from legacy plugin settings
 const dataFile = join(target, "data.json");

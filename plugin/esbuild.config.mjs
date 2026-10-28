@@ -35,7 +35,7 @@ const options = {
   logLevel: "info",
   sourcemap: prod ? false : "inline",
   treeShaking: true,
-  outfile: "main.js",
+  outfile: "../main.js",
   minify: prod,
   alias: { "@syncify/shared": "../shared/src/index.ts" },
 };
