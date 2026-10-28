@@ -1,12 +1,12 @@
-import { App, TFile } from "obsidian";
-import { canonicalKey, DEFAULT_EXCLUDES, isExcluded, normalizePath, type Change } from "@syncify/shared";
+import { App, Notice, TFile } from "obsidian";
+import { canonicalKey, defaultExcludes, isExcluded, normalizePath, type Change } from "./protocol";
 import { SyncClient, SyncApiError, SyncConflictError } from "./api";
 import { SyncLog } from "./log";
 import type { SyncifySettings } from "./settings";
-import { conflictPathFor, ensureDir, parentDir, sha256Hex } from "./util";
+import { conflictPathFor, ensureDir, errMsg, parentDir, sha256Hex } from "./util";
 
 function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+  return new Promise((r) => window.setTimeout(r, ms));
 }
 
 export interface IndexEntry {
@@ -35,10 +35,6 @@ export interface SyncReport {
 
 export type SyncState = "idle" | "syncing" | "error";
 
-const HARD_EXCLUDES = [...DEFAULT_EXCLUDES, ".obsidian/plugins/syncify/**", ".trash/**", ".syncify/**"];
-const SYNC_INDEX_DIR = ".obsidian/plugins/syncify";
-const SYNC_INDEX_PATH = `${SYNC_INDEX_DIR}/index.json`;
-
 interface LocalFileStat {
   path: string;
   size: number;
@@ -56,6 +52,27 @@ export class SyncEngine {
   private suppressed = new Map<string, number>();
   private cooldownUntil = 0;
   private opsSincePause = 0;
+
+  private get configDir(): string {
+    return this.app.vault.configDir;
+  }
+
+  private get indexDir(): string {
+    return `${this.configDir}/plugins/syncify`;
+  }
+
+  private get indexPath(): string {
+    return `${this.indexDir}/index.json`;
+  }
+
+  private hardExcludes(): string[] {
+    return [
+      ...defaultExcludes(this.configDir),
+      `${this.configDir}/plugins/syncify/**`,
+      ".trash/**",
+      ".syncify/**",
+    ];
+  }
 
   get isCoolingDown(): boolean {
     return Date.now() < this.cooldownUntil;
@@ -103,20 +120,16 @@ export class SyncEngine {
     return true;
   }
 
-  private excludes(): string[] {
-    return [...HARD_EXCLUDES, ...this.getSettings().excludePatterns];
-  }
-
   isExcluded(path: string): boolean {
-    return isExcluded(path, this.excludes());
+    return isExcluded(path, [...this.hardExcludes(), ...this.getSettings().excludePatterns]);
   }
 
   // ---- persistence -------------------------------------------------------------
 
   async loadIndex(): Promise<void> {
     try {
-      if (await this.app.vault.adapter.exists(SYNC_INDEX_PATH)) {
-        const raw = await this.app.vault.adapter.read(SYNC_INDEX_PATH);
+      if (await this.app.vault.adapter.exists(this.indexPath)) {
+        const raw = await this.app.vault.adapter.read(this.indexPath);
         const parsed = JSON.parse(raw) as Partial<SyncIndex>;
         this.index = {
           lastSeq: Number(parsed.lastSeq ?? 0),
@@ -124,18 +137,18 @@ export class SyncEngine {
           files: parsed.files ?? {},
         };
       }
-    } catch (e: any) {
-      this.log.warn(`index load failed, starting fresh: ${e?.message ?? e}`);
+    } catch (e) {
+      this.log.warn(`index load failed, starting fresh: ${errMsg(e)}`);
       this.index = { lastSeq: 0, initialized: false, files: {} };
     }
   }
 
   async saveIndex(): Promise<void> {
     try {
-      await ensureDir(this.app, SYNC_INDEX_DIR);
-      await this.app.vault.adapter.write(SYNC_INDEX_PATH, JSON.stringify(this.index));
-    } catch (e: any) {
-      this.log.warn(`index save failed: ${e?.message ?? e}`);
+      await ensureDir(this.app, this.indexDir);
+      await this.app.vault.adapter.write(this.indexPath, JSON.stringify(this.index));
+    } catch (e) {
+      this.log.warn(`index save failed: ${errMsg(e)}`);
     }
   }
 
@@ -152,15 +165,17 @@ export class SyncEngine {
         const listed = await this.app.vault.adapter.list("/");
         const include = s.obsidianInclude.map((p) => normalizePath(p));
         for (const p of listed.files) {
-          if (!p.startsWith(".obsidian/")) continue;
+          if (!p.startsWith(`${this.configDir}/`)) continue;
           if (include.length > 0 && !include.some((pref) => p === pref || p.startsWith(pref + "/"))) continue;
           try {
             const st = await this.app.vault.adapter.stat(p);
             if (st && st.type === "file") out.push({ path: canonicalKey(p), size: st.size, mtime: st.mtime });
-          } catch {}
+          } catch {
+            // stat race (file vanished mid-scan): skip
+          }
         }
-      } catch (e: any) {
-        this.log.warn(`config dir scan failed: ${e?.message ?? e}`);
+      } catch (e) {
+        this.log.warn(`config dir scan failed: ${errMsg(e)}`);
       }
     }
     return out;
@@ -201,10 +216,11 @@ export class SyncEngine {
     this.suppress(path);
     if (f) {
       try {
-        await this.app.vault.trash(f, true);
+        // respects the user's trash preference (system/local)
+        await this.app.fileManager.trashFile(f);
         return;
       } catch {
-        // system trash unavailable (mobile) -> fall through to local trash
+        // fileManager unavailable or refused -> fall back to local trash
       }
     }
     try {
@@ -212,7 +228,9 @@ export class SyncEngine {
     } catch {
       try {
         await this.app.vault.adapter.remove(path);
-      } catch {}
+      } catch {
+        // nothing more we can do; server copy stays for recovery
+      }
     }
   }
 
@@ -247,10 +265,10 @@ export class SyncEngine {
       await this.pullPass(report);
       await this.pushPass(report);
       this.index.initialized = true;
-    } catch (e: any) {
+    } catch (e) {
       if (SyncEngine.isRateLimit(e)) this.startCooldown();
-      report.errors.push(String(e?.message ?? e));
-      this.log.error(`sync failed (${reason}): ${e?.message ?? e}`);
+      report.errors.push(errMsg(e));
+      this.log.error(`sync failed (${reason}): ${errMsg(e)}`);
     } finally {
       report.durationMs = Date.now() - started;
       this.lastReport = report;
@@ -264,7 +282,7 @@ export class SyncEngine {
       const r = this.queueReason;
       this.queueReason = "queued";
       // run queued sync after the current one fully settles
-      setTimeout(() => {
+      window.setTimeout(() => {
         void this.syncNow(r).then((rep) => {
           if (rep) this.log.info(`queued sync done (${rep.reason}): ↑${rep.pushed} ↓${rep.pulled}`);
         });
@@ -284,9 +302,9 @@ export class SyncEngine {
       for (const c of res.changes) {
         try {
           await this.applyChange(c, report);
-        } catch (e: any) {
+        } catch (e) {
           if (SyncEngine.isRateLimit(e)) throw e;
-          report.errors.push(`pull ${c.path}: ${e?.message ?? e}`);
+          report.errors.push(`pull ${c.path}: ${errMsg(e)}`);
         }
       }
       since = res.hasMore ? res.nextSeq : res.currentSeq;
@@ -352,8 +370,8 @@ export class SyncEngine {
           this.index.files[toKey] = entry;
         }
         report.pulled++;
-      } catch (e: any) {
-        report.errors.push(`move ${fromKey} -> ${toKey}: ${e?.message ?? e}`);
+      } catch (e) {
+        report.errors.push(`move ${fromKey} -> ${toKey}: ${errMsg(e)}`);
       }
       return;
     }
@@ -457,8 +475,8 @@ export class SyncEngine {
       await this.writeBinary(cpath, localBuf);
       const up = await this.client.upload(cpath, localBuf, { baseVersion: 0, hash: localHash, mtime: Date.now() });
       this.index.files[cpath] = { version: up.version, hash: localHash, size: localBuf.byteLength, mtime: Date.now() };
-    } catch (e: any) {
-      report.errors.push(`conflict copy upload ${cpath}: ${e?.message ?? e}`);
+    } catch (e) {
+      report.errors.push(`conflict copy upload ${cpath}: ${errMsg(e)}`);
     }
     const dl = await this.client.download(remote.path);
     await this.writeBinary(key, dl.data);
@@ -482,8 +500,8 @@ export class SyncEngine {
       try {
         buf = await this.readBinary(f.path);
         hash = await sha256Hex(buf);
-      } catch (e: any) {
-        report.errors.push(`read ${f.path}: ${e?.message ?? e}`);
+      } catch (e) {
+        report.errors.push(`read ${f.path}: ${errMsg(e)}`);
         continue;
       }
       if (entry && entry.hash === hash) {
@@ -493,9 +511,9 @@ export class SyncEngine {
       try {
         await this.pace();
         await this.pushOne(f.path, buf, hash, f, report);
-      } catch (e: any) {
+      } catch (e) {
         if (SyncEngine.isRateLimit(e)) throw e;
-        report.errors.push(`push ${f.path}: ${e?.message ?? e}`);
+        report.errors.push(`push ${f.path}: ${errMsg(e)}`);
       }
     }
 
@@ -515,7 +533,7 @@ export class SyncEngine {
           report.deleted++;
         } catch (e: any) {
           if (SyncEngine.isRateLimit(e)) throw e;
-          report.errors.push(`delete ${key}: ${e?.message ?? e}`);
+          report.errors.push(`delete ${key}: ${errMsg(e)}`);
         }
       }
     }
@@ -593,7 +611,6 @@ export class SyncEngine {
     await this.saveIndex();
     const rep = await this.syncNow("full-resync");
     if (rep) {
-      const { Notice } = await import("obsidian");
       new Notice(
         `syncify: full resync done — ↑${rep.pushed} ↓${rep.pulled} conflicts:${rep.conflicts} errors:${rep.errors.length}`,
         8000,

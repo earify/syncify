@@ -1,4 +1,4 @@
-import { App, EventRef, TAbstractFile, TFile } from "obsidian";
+import { App, EventRef, TAbstractFile } from "obsidian";
 import type { SyncEngine } from "./engine";
 
 /**
@@ -6,7 +6,7 @@ import type { SyncEngine } from "./engine";
  * suppressed by the engine so we don't loop.
  */
 export class VaultWatcher {
-  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private debounceTimer: number | null = null;
   private pendingPaths = new Set<string>();
   private paused = false;
   private refs: EventRef[] = [];
@@ -36,7 +36,7 @@ export class VaultWatcher {
 
   stop(): void {
     if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
+      window.clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
     this.pendingPaths.clear();
@@ -54,13 +54,9 @@ export class VaultWatcher {
   private mark(f: TAbstractFile): void {
     if (this.paused) return;
     if (this.engine.isSuppressed(f.path)) return;
-    if (f instanceof TFile) {
-      this.pendingPaths.add(f.path);
-    } else {
-      this.pendingPaths.add(f.path);
-    }
-    if (this.debounceTimer) clearTimeout(this.debounceTimer);
-    this.debounceTimer = setTimeout(() => {
+    this.pendingPaths.add(f.path);
+    if (this.debounceTimer) window.clearTimeout(this.debounceTimer);
+    this.debounceTimer = window.setTimeout(() => {
       const paths = Array.from(this.pendingPaths);
       this.pendingPaths.clear();
       this.debounceTimer = null;

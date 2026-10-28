@@ -1,12 +1,14 @@
 {
   "name": "syncify",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
-  "description": "syncify - self-hosted Obsidian vault sync (server + plugin)",
-  "workspaces": ["shared", "server", "plugin"],
+  "description": "syncify - self-hosted Obsidian vault sync plugin",
+  "workspaces": [
+    "plugin"
+  ],
   "scripts": {
-    "build": "npm run build -w shared && npm run build -w server && npm run build -w plugin",
-    "test": "npm run test -w server",
+    "build": "npm run build -w plugin",
+    "typecheck": "npm run typecheck -w plugin",
     "deploy:plugin": "node scripts/deploy-plugin.mjs"
   },
   "license": "MIT"

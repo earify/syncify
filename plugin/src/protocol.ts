@@ -1,6 +1,5 @@
-// syncify shared protocol types (server + plugin).
-// Wire-compatible with the original eari-sync protocol so the plugin can talk
-// to both the legacy server and the new server.
+// syncify protocol types + path utilities (shared contract with the server).
+// Kept inline so the plugin repo contains no Node-only code.
 
 export type Op = "create" | "modify" | "delete" | "move";
 
@@ -66,23 +65,17 @@ export interface WsMessage {
   message?: string;
 }
 
-export interface ServerSettings {
-  port: number;
-  dataDir: string;
-  httpsMode: "letsencrypt" | "selfsigned";
-  certPath?: string;
-  keyPath?: string;
-  caCertPath?: string;
+/** Default exclude patterns, relative to the vault config dir. */
+export function defaultExcludes(configDir: string): string[] {
+  return [
+    ".git/**",
+    `${configDir}/cache/**`,
+    `${configDir}/workspace*.json`,
+    ".syncify/**",
+    "**/.DS_Store",
+    "**/Thumbs.db",
+  ];
 }
-
-export const DEFAULT_EXCLUDES = [
-  ".git/**",
-  ".obsidian/cache/**",
-  ".obsidian/workspace*.json",
-  ".syncify/**",
-  "**/.DS_Store",
-  "**/Thumbs.db",
-];
 
 /** Normalize a vault-relative POSIX path. Rejects traversal. */
 export function normalizePath(p: string): string {
@@ -111,9 +104,7 @@ export function globToRegExp(glob: string): RegExp {
     const c = g[i];
     if (c === "*") {
       if (g[i + 1] === "*") {
-        // consume consecutive stars
         while (g[i + 1] === "*") i++;
-        // `**` or `**/` -> any chars including /
         if (g[i + 1] === "/") {
           re += "(?:.*/)?";
           i++;

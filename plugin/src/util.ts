@@ -1,5 +1,5 @@
 import type { App } from "obsidian";
-import { normalizePath } from "@syncify/shared";
+import { normalizePath } from "./protocol";
 
 export function sha256Hex(data: ArrayBuffer): Promise<string> {
   return crypto.subtle
@@ -47,4 +47,10 @@ export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Human-readable message from an unknown thrown value. */
+export function errMsg(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  return String(e);
 }

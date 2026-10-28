@@ -37,7 +37,7 @@ const options = {
   treeShaking: true,
   outfile: "../main.js",
   minify: prod,
-  alias: { "@syncify/shared": "../shared/src/index.ts" },
+  alias: {},
 };
 
 if (prod) {

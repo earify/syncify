@@ -1,5 +1,6 @@
 import { App, Notice, PluginSettingTab, Setting, Platform } from "obsidian";
 import type SyncifyPlugin from "./main";
+import { errMsg } from "./util";
 
 export interface SyncifySettings {
   serverUrl: string;
@@ -108,8 +109,8 @@ export class SyncifySettingTab extends PluginSettingTab {
           try {
             await this.plugin.client.testAuth();
             new Notice("syncify: connection OK");
-          } catch (e: any) {
-            new Notice(`syncify: connection failed (${e?.message ?? e})`);
+          } catch (e) {
+            new Notice(`syncify: connection failed (${errMsg(e)})`);
           } finally {
             btn.disabled = false;
             b.setButtonText("Test");

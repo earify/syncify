@@ -1,5 +1,5 @@
 import { requestUrl } from "obsidian";
-import type { Change, ChangesResponse, ConflictInfo, FileMeta, PushResult, VaultMeta } from "@syncify/shared";
+import type { ChangesResponse, ConflictInfo, FileMeta, PushResult, VaultMeta } from "./protocol";
 
 export class SyncConflictError extends Error {
   constructor(public info: ConflictInfo) {
@@ -76,19 +76,22 @@ export class SyncClient {
       url: `${this.base()}${path}`,
       method,
       headers: extra,
-      body: body as any,
+      body,
       throw: false,
     });
     if (res.status >= 400) {
       let msg = "request failed";
-      let body: any;
+      let body: unknown;
       try {
         body = res.json;
-        msg = body?.error ?? msg;
+        const errText = (body as { error?: string } | null)?.error;
+        msg = errText ?? msg;
       } catch {
         try {
           msg = res.text || msg;
-        } catch {}
+        } catch {
+          // response had no usable body
+        }
       }
       throw new SyncApiError(res.status, msg, body);
     }
@@ -240,8 +243,8 @@ export class SyncClient {
     let ws: WebSocket | null = null;
     let closed = false;
     let retry = 0;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let pingTimer: ReturnType<typeof setInterval> | null = null;
+    let timer: number | null = null;
+    let pingTimer: number | null = null;
 
     const connect = () => {
       if (closed) return;
@@ -255,17 +258,21 @@ export class SyncClient {
       ws.onopen = () => {
         retry = 0;
         onStatus?.(true);
-        pingTimer = setInterval(() => {
+        pingTimer = window.setInterval(() => {
           try {
             ws?.send(JSON.stringify({ type: "ping" }));
-          } catch {}
+          } catch {
+            // socket already closing; onclose handles reconnect
+          }
         }, 30000);
       };
       ws.onmessage = (ev) => {
         try {
-          const msg = JSON.parse(String(ev.data));
+          const msg = JSON.parse(String(ev.data)) as { type?: string };
           if (msg.type === "change") onChange();
-        } catch {}
+        } catch {
+          // ignore malformed frames
+        }
       };
       ws.onclose = () => {
         onStatus?.(false);
@@ -275,19 +282,21 @@ export class SyncClient {
       ws.onerror = () => {
         try {
           ws?.close();
-        } catch {}
+        } catch {
+          // close on a dead socket is a no-op
+        }
       };
     };
 
     const scheduleRetry = () => {
       if (closed) return;
       const delay = Math.min(30000, 1000 * Math.pow(2, retry++));
-      timer = setTimeout(connect, delay);
+      timer = window.setTimeout(connect, delay);
     };
 
     const cleanupTimers = () => {
       if (pingTimer) {
-        clearInterval(pingTimer);
+        window.clearInterval(pingTimer);
         pingTimer = null;
       }
     };
@@ -296,11 +305,13 @@ export class SyncClient {
 
     return () => {
       closed = true;
-      if (timer) clearTimeout(timer);
+      if (timer) window.clearTimeout(timer);
       cleanupTimers();
       try {
         ws?.close();
-      } catch {}
+      } catch {
+        // socket already closed
+      }
     };
   }
 }

@@ -1,6 +1,7 @@
-import { ItemView, Notice, WorkspaceLeaf, Setting, TFile } from "obsidian";
+import { ItemView, Notice, WorkspaceLeaf, Setting } from "obsidian";
 import type { ShareInfo } from "./api";
 import type { SyncClient } from "./api";
+import { errMsg } from "./util";
 
 export const SHARE_VIEW_TYPE = "syncify-share-view";
 
@@ -48,8 +49,8 @@ export class ShareListView extends ItemView {
     let shares: ShareInfo[] = [];
     try {
       shares = await this.client.listShares();
-    } catch (e: any) {
-      contentEl.createEl("div", { text: `Failed to list shares: ${e?.message ?? e}`, cls: "mod-warning" });
+    } catch (e) {
+      contentEl.createEl("div", { text: `Failed to list shares: ${errMsg(e)}`, cls: "mod-warning" });
       return;
     }
     if (shares.length === 0) {

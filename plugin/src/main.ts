@@ -1,11 +1,11 @@
-import { Plugin, Notice, WorkspaceLeaf, TFile, Platform } from "obsidian";
+import { Plugin, Notice, WorkspaceLeaf, TFile } from "obsidian";
 import { SyncClient } from "./api";
 import { SyncEngine } from "./engine";
 import { SyncLog } from "./log";
 import { SyncifySettingTab, defaultSettings, type SyncifySettings } from "./settings";
 import { SHARE_VIEW_TYPE, ShareListView } from "./share";
 import { VaultWatcher } from "./watcher";
-import { ensureDir } from "./util";
+import { ensureDir, errMsg } from "./util";
 
 const DATA_VERSION = 1;
 
@@ -30,7 +30,7 @@ export default class SyncifyPlugin extends Plugin {
     const deviceId =
       stored?.deviceId && typeof stored.deviceId === "string"
         ? stored.deviceId
-        : (globalThis.crypto?.randomUUID?.() ?? `dev-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+        : (window.crypto?.randomUUID?.() ?? `dev-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
     this.settings = { ...defaultSettings(deviceId), ...(stored ?? {}) } as SyncifySettings;
     if (!this.settings.deviceId) this.settings.deviceId = deviceId;
     this.log.setDebug(this.settings.debug);
@@ -210,8 +210,8 @@ export default class SyncifyPlugin extends Plugin {
       const url = this.client.shareUrl(share.shareId);
       await navigator.clipboard.writeText(url);
       new Notice(`Share link copied:\n${url}`, 8000);
-    } catch (e: any) {
-      new Notice(`Share failed: ${e?.message ?? e}`, 8000);
+    } catch (e) {
+      new Notice(`Share failed: ${errMsg(e)}`, 8000);
     }
   }
 
@@ -225,7 +225,7 @@ export default class SyncifyPlugin extends Plugin {
       leaf = workspace.getRightLeaf(false) ?? workspace.getLeaf(true);
       await leaf.setViewState({ type: SHARE_VIEW_TYPE, active: true });
     }
-    workspace.revealLeaf(leaf);
+    await workspace.revealLeaf(leaf);
     const view = leaf.view;
     if (view instanceof ShareListView) await view.render();
   }
@@ -234,11 +234,11 @@ export default class SyncifyPlugin extends Plugin {
     const dir = ".syncify";
     try {
       await ensureDir(this.app, dir);
-      const content = `# syncify diagnostics\n- time: ${new Date().toISOString()}\n- plugin: 0.1.0\n- server: ${this.settings.serverUrl}\n- vaultId: ${this.settings.vaultId}\n- device: ${this.settings.deviceName} (${this.settings.deviceId})\n- lastSeq: ${this.engine.index.lastSeq}\n- tracked files: ${Object.keys(this.engine.index.files).length}\n\n## last report\n\`\`\`\n${JSON.stringify(this.engine.lastReport, null, 2)}\n\`\`\`\n\n## log\n\`\`\`\n${this.log.formatted()}\n\`\`\`\n`;
+      const content = `# syncify diagnostics\n- time: ${new Date().toISOString()}\n- plugin: ${this.manifest.version}\n- server: ${this.settings.serverUrl}\n- vaultId: ${this.settings.vaultId}\n- device: ${this.settings.deviceName} (${this.settings.deviceId})\n- lastSeq: ${this.engine.index.lastSeq}\n- tracked files: ${Object.keys(this.engine.index.files).length}\n\n## last report\n\`\`\`\n${JSON.stringify(this.engine.lastReport, null, 2)}\n\`\`\`\n\n## log\n\`\`\`\n${this.log.formatted()}\n\`\`\`\n`;
       await this.app.vault.adapter.write(`${dir}/diagnostics.txt`, content);
       new Notice(`Diagnostics written to ${dir}/diagnostics.txt`);
-    } catch (e: any) {
-      new Notice(`Diagnostics export failed: ${e?.message ?? e}`);
+    } catch (e) {
+      new Notice(`Diagnostics export failed: ${errMsg(e)}`);
     }
   }
 }
