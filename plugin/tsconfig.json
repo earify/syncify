@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "inlineSourceMap": true,
+    "inlineSources": true,
+    "module": "ESNext",
+    "target": "ES2022",
+    "noImplicitAny": true,
+    "strict": true,
+    "moduleResolution": "node",
+    "importHelpers": true,
+    "isolatedModules": true,
+    "allowJs": true,
+    "skipLibCheck": true,
+    "lib": ["DOM", "ES2022"],
+    "paths": { "@syncify/shared": ["../shared/src/index.ts"] }
+  },
+  "include": ["src/**/*.ts", "esbuild.config.mjs", "../shared/src/index.ts"]
+}

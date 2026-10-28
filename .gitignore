@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.tgz
+plugin/main.js
+_recovery/
+.DS_Store
+Thumbs.db

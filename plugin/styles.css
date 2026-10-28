@@ -1,0 +1,29 @@
+/* Syncify plugin styles */
+
+.syncify-status-ok {
+  color: var(--text-success, #4caf50);
+}
+.syncify-status-err {
+  color: var(--text-error, #e05a5a);
+}
+.syncify-status-syncing {
+  color: var(--text-accent, #7aa2f7);
+}
+
+.share-list-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.share-list-item .share-path {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.share-list-item.disabled .share-path {
+  opacity: 0.5;
+  text-decoration: line-through;
+}

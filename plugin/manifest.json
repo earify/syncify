@@ -1,0 +1,9 @@
+{
+  "id": "syncify",
+  "name": "Syncify",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "Self-hosted vault sync across your devices.",
+  "author": "earify",
+  "isDesktopOnly": false
+}
