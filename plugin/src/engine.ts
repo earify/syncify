@@ -16,10 +16,18 @@ export interface IndexEntry {
   mtime?: number;
 }
 
+export interface Tombstone {
+  version: number; // server file version at the time of deletion
+  at: number; // local epoch ms when the deletion was recorded
+}
+
 export interface SyncIndex {
   lastSeq: number;
   initialized: boolean;
   files: Record<string, IndexEntry>;
+  /** Deletion tombstones: paths we deliberately removed, so stale server
+   *  changes (and full-resync replays) never resurrect them. */
+  deleted?: Record<string, Tombstone>;
 }
 
 export interface SyncReport {
@@ -103,6 +111,21 @@ export class SyncEngine {
     private onStateChange: () => void,
   ) {}
 
+  // ---- deletion tombstones ------------------------------------------------------
+
+  private tombstone(path: string, version: number): void {
+    if (!this.index.deleted) this.index.deleted = {};
+    this.index.deleted[canonicalKey(path)] = { version, at: Date.now() };
+  }
+
+  private tombstoneVersion(path: string): number | undefined {
+    return this.index.deleted?.[canonicalKey(path)]?.version;
+  }
+
+  private clearTombstone(path: string): void {
+    if (this.index.deleted) delete this.index.deleted[canonicalKey(path)];
+  }
+
   // ---- suppression (ignore events caused by our own writes) -------------------
 
   suppress(path: string): void {
@@ -135,17 +158,31 @@ export class SyncEngine {
           lastSeq: Number(parsed.lastSeq ?? 0),
           initialized: !!parsed.initialized,
           files: parsed.files ?? {},
+          deleted: parsed.deleted ?? {},
         };
       }
     } catch (e) {
       this.log.warn(`index load failed, starting fresh: ${errMsg(e)}`);
-      this.index = { lastSeq: 0, initialized: false, files: {} };
+      this.index = { lastSeq: 0, initialized: false, files: {}, deleted: {} };
     }
   }
 
   async saveIndex(): Promise<void> {
     try {
       await ensureDir(this.app, this.indexDir);
+      // prune tombstones: cap at 500 newest, drop entries older than 90 days
+      const deleted = this.index.deleted ?? {};
+      const cutoff = Date.now() - 90 * 86400000;
+      for (const [p, t] of Object.entries(deleted)) {
+        if (t.at < cutoff) delete deleted[p];
+      }
+      const keys = Object.keys(deleted);
+      if (keys.length > 500) {
+        keys
+          .sort((a, b) => (deleted[a]?.at ?? 0) - (deleted[b]?.at ?? 0))
+          .slice(0, keys.length - 500)
+          .forEach((k) => delete deleted[k]);
+      }
       await this.app.vault.adapter.write(this.indexPath, JSON.stringify(this.index));
     } catch (e) {
       this.log.warn(`index save failed: ${errMsg(e)}`);
@@ -342,6 +379,7 @@ export class SyncEngine {
       }
       await this.trashLocalFile(key);
       delete this.index.files[key];
+      this.tombstone(key, c.version);
       report.deleted++;
       return;
     }
@@ -378,6 +416,19 @@ export class SyncEngine {
 
     // create / modify
     const entry = this.index.files[key];
+    const tsv = this.tombstoneVersion(key);
+    if (tsv !== undefined) {
+      if ((c.version ?? 0) > tsv) {
+        // re-created on the server after our deletion -> intentional resurrect
+        this.log.info(`re-created on server after delete; resurrecting ${key}`);
+        this.clearTombstone(key);
+      } else {
+        // stale replay of pre-deletion history -> keep it deleted
+        this.log.info(`stale change for deleted ${key} (v${c.version} <= tombstone v${tsv}); skipping`);
+        report.skipped++;
+        return;
+      }
+    }
     if (entry && entry.hash && c.hash && entry.hash === c.hash && entry.version >= c.version) {
       report.skipped++;
       return;
@@ -526,12 +577,14 @@ export class SyncEngine {
           continue;
         }
         try {
+          const ver = this.index.files[key].version;
           this.suppress(key);
           await this.pace();
-          await this.client.remove(key, this.index.files[key].version);
+          await this.client.remove(key, ver);
           delete this.index.files[key];
+          this.tombstone(key, ver);
           report.deleted++;
-        } catch (e: any) {
+        } catch (e) {
           if (SyncEngine.isRateLimit(e)) throw e;
           report.errors.push(`delete ${key}: ${errMsg(e)}`);
         }
@@ -547,13 +600,17 @@ export class SyncEngine {
     report: SyncReport,
   ): Promise<void> {
     const entry = this.index.files[path];
+    // re-creating over our own server-side delete: acknowledge it explicitly
+    const tsVer = entry ? undefined : this.tombstoneVersion(path);
     try {
       const res = await this.client.upload(path, buf, {
         baseVersion: entry?.version ?? 0,
         mtime: stat.mtime,
         hash,
+        seenDeleteVersion: tsVer,
       });
       this.index.files[path] = { version: res.version, hash, size: stat.size, mtime: stat.mtime };
+      if (tsVer !== undefined) this.clearTombstone(path);
       report.pushed++;
     } catch (e) {
       if (e instanceof SyncConflictError) {
@@ -607,7 +664,8 @@ export class SyncEngine {
 
   async forceFullResync(): Promise<void> {
     this.log.info("force full resync requested");
-    this.index = { lastSeq: 0, initialized: false, files: {} };
+    // tombstones survive: deleted files must stay deleted across the replay
+    this.index = { lastSeq: 0, initialized: false, files: {}, deleted: this.index.deleted ?? {} };
     await this.saveIndex();
     const rep = await this.syncNow("full-resync");
     if (rep) {
