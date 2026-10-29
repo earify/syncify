@@ -26,7 +26,7 @@ export default class SyncifyPlugin extends Plugin {
   private statusEl: HTMLElement | null = null;
 
   async onload(): Promise<void> {
-    const stored = (await this.loadData()) as StoredData;
+    const stored: StoredData | null = await this.loadData();
     const deviceId =
       stored?.deviceId && typeof stored.deviceId === "string"
         ? stored.deviceId

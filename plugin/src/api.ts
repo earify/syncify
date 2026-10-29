@@ -8,7 +8,11 @@ export class SyncConflictError extends Error {
 }
 
 export class SyncApiError extends Error {
-  constructor(public status: number, message: string, public body?: any) {
+  constructor(
+    public status: number,
+    message: string,
+    public body?: unknown,
+  ) {
     super(`${message} (HTTP ${status})`);
   }
 }
@@ -157,16 +161,17 @@ export class SyncClient {
       return JSON.parse(res.text) as PushResult;
     } catch (e) {
       if (e instanceof SyncApiError && e.status === 409) {
-        const body = e.body ?? {};
+        const body: unknown = e.body ?? {};
+        const b = body as Partial<ConflictInfo>;
         const info: ConflictInfo = {
           error: "conflict",
-          path: typeof body.path === "string" ? body.path : path,
-          serverVersion: Number(body.serverVersion ?? -1),
-          serverHash: body.serverHash,
-          serverSize: body.serverSize,
-          serverMtime: body.serverMtime,
+          path: typeof b.path === "string" ? b.path : path,
+          serverVersion: Number(b.serverVersion ?? -1),
+          serverHash: typeof b.serverHash === "string" ? b.serverHash : undefined,
+          serverSize: typeof b.serverSize === "number" ? b.serverSize : undefined,
+          serverMtime: typeof b.serverMtime === "number" ? b.serverMtime : undefined,
           clientVersion: meta.baseVersion ?? 0,
-          deleted: !!body.deleted,
+          deleted: !!b.deleted,
         };
         throw new SyncConflictError(info);
       }
@@ -182,7 +187,7 @@ export class SyncClient {
         `/api/v1/vaults/${encodeURIComponent(this.opts.vaultId)}/files/${path.split("/").map(encodeURIComponent).join("/")}${q}`,
         this.headers(),
       );
-      return res.status === 204 ? null : JSON.parse(res.text);
+      return res.status === 204 ? null : (JSON.parse(res.text) as { version: number; seq: number });
     } catch (e) {
       if (e instanceof SyncApiError && e.status === 404) return null; // already gone
       throw e;
@@ -196,7 +201,7 @@ export class SyncClient {
       this.headers({ "content-type": "application/json" }),
       JSON.stringify({ from, to, baseVersion: baseVersion ?? 0 }),
     );
-    return JSON.parse(res.text);
+    return JSON.parse(res.text) as { from: string; to: string; version: number; seq: number };
   }
 
   // ---- shares ----------------------------------------------------------------

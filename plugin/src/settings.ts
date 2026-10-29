@@ -1,4 +1,4 @@
-import { App, Notice, PluginSettingTab, Setting, Platform } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting, Platform, type SettingDefinitionItem } from "obsidian";
 import type SyncifyPlugin from "./main";
 import { errMsg } from "./util";
 
@@ -49,6 +49,34 @@ export class SyncifySettingTab extends PluginSettingTab {
   constructor(app: App, plugin: SyncifyPlugin) {
     super(app, plugin);
     this.plugin = plugin;
+  }
+
+  /**
+   * Declarative definitions power Obsidian 1.13+ settings search. The classic
+   * display() below remains the rendered UI; these mirror its simple controls.
+   */
+  override getSettingDefinitions(): SettingDefinitionItem[] {
+    return [
+      { name: "Server URL", control: { type: "text", key: "serverUrl", placeholder: "https://your-server:8443" } },
+      { name: "Vault ID", control: { type: "text", key: "vaultId" } },
+      { name: "Vault secret", control: { type: "secret", key: "vaultSecret" } },
+      { name: "Device name", control: { type: "text", key: "deviceName" } },
+      { name: "Auto sync", control: { type: "toggle", key: "autoSync" } },
+      { name: "Auto sync interval (seconds)", control: { type: "number", key: "autoSyncIntervalSec" } },
+      { name: "Sync config folder", control: { type: "toggle", key: "syncObsidian" } },
+      { name: "Max file size (MB)", control: { type: "number", key: "maxFileSizeMB" } },
+      { name: "Debug logging", control: { type: "toggle", key: "debug" } },
+    ];
+  }
+
+  override getControlValue(key: string): unknown {
+    return (this.plugin.settings as unknown as Record<string, unknown>)[key];
+  }
+
+  override setControlValue(key: string, value: unknown): void {
+    (this.plugin.settings as unknown as Record<string, unknown>)[key] = value;
+    void this.plugin.saveSettings();
+    this.plugin.applyAutoSync();
   }
 
   display(): void {
@@ -147,7 +175,7 @@ export class SyncifySettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Sync .obsidian config")
-      .setDesc("Sync plugin/theme settings under .obsidian (excluding caches and this plugin's folder)")
+      .setDesc(`Sync plugin/theme settings under ${this.app.vault.configDir} (excluding caches and this plugin's folder)`)
       .addToggle((t) =>
         t.setValue(s.syncObsidian).onChange(async (v) => {
           s.syncObsidian = v;

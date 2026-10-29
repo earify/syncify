@@ -50,11 +50,13 @@ export class ShareListView extends ItemView {
     try {
       shares = await this.client.listShares();
     } catch (e) {
-      contentEl.createEl("div", { text: `Failed to list shares: ${errMsg(e)}`, cls: "mod-warning" });
+      contentEl.createDiv({ text: `Failed to list shares: ${errMsg(e)}`, cls: "mod-warning" });
       return;
     }
     if (shares.length === 0) {
-      contentEl.createEl("div", { text: "No shared notes yet. Use the command palette: “Copy share link for current note”." });
+      contentEl.createDiv({
+        text: "No shared notes yet. Use the command palette: 'Copy share link for current note'.",
+      });
       return;
     }
 
