@@ -1,0 +1,54 @@
+name: Release plugin
+
+on:
+  push:
+    tags:
+      - "0.*"
+      - "1.*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-fund --no-audit
+
+      - name: Typecheck
+        run: npm run typecheck -w plugin
+
+      - name: Build plugin
+        run: npm run build -w plugin
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          cp main.js manifest.json styles.css release/
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            release/main.js
+            release/manifest.json
+            release/styles.css
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            release/main.js release/manifest.json release/styles.css \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes
