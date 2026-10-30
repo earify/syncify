@@ -30,7 +30,7 @@ export function defaultDeviceName(): string {
 
 export function defaultSettings(deviceId: string): SyncifySettings {
   return {
-    serverUrl: "https://sync.earify.net:8443",
+    serverUrl: "",
     vaultId: "",
     vaultSecret: "",
     deviceId,

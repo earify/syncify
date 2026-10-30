@@ -1,6 +1,7 @@
-// Deploys the built plugin into the PC vault and seeds settings from the
-// legacy eari-sync plugin on first deploy.
-import { existsSync, mkdirSync, readFileSync, copyFileSync } from "node:fs";
+// Deploys the built plugin into the PC vault.
+// Settings are deliberately NOT seeded — a fresh install starts blank and the
+// user enters their own server URL / vault credentials.
+import { existsSync, mkdirSync, copyFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -20,31 +21,5 @@ for (const f of files) {
 }
 mkdirSync(target, { recursive: true });
 for (const f of files) copyFileSync(join(repo, f), join(target, f));
-
-// seed data.json once from legacy plugin settings
-const dataFile = join(target, "data.json");
-if (!existsSync(dataFile)) {
-  const legacy = join(VAULT, ".obsidian", "plugins", "eari-sync", "data.json");
-  if (existsSync(legacy)) {
-    try {
-      const old = JSON.parse(readFileSync(legacy, "utf8"));
-      const seed = {
-        serverUrl: old.serverUrl,
-        vaultId: old.vaultId,
-        vaultSecret: old.vaultSecret,
-        excludePatterns: old.excludePatterns ?? [],
-        syncObsidian: old.syncObsidian ?? true,
-        deviceClass: undefined,
-        obsidianInclude: old.obsidianInclude ?? [],
-        maxFileSizeMB: old.maxFileSizeMB ?? 50,
-      };
-      const { writeFileSync } = await import("node:fs");
-      writeFileSync(dataFile, JSON.stringify(seed, null, 2), "utf8");
-      console.log("seeded data.json from legacy eari-sync settings");
-    } catch (e) {
-      console.warn("could not seed data.json:", e?.message ?? e);
-    }
-  }
-}
 
 console.log(`deployed to ${target}`);
