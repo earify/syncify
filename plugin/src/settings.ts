@@ -11,6 +11,9 @@ export interface SyncifySettings {
   autoSync: boolean;
   autoSyncIntervalSec: number;
   syncObsidian: boolean;
+  /** "all": sync the whole config folder (minus hard excludes).
+   *  "selected": sync only the top-level entries listed in obsidianInclude. */
+  obsidianMode: "all" | "selected";
   obsidianInclude: string[];
   excludePatterns: string[];
   maxFileSizeMB: number;
@@ -35,6 +38,7 @@ export function defaultSettings(deviceId: string): SyncifySettings {
     autoSync: true,
     autoSyncIntervalSec: 30,
     syncObsidian: true,
+    obsidianMode: "all",
     obsidianInclude: [],
     excludePatterns: [],
     maxFileSizeMB: 50,
@@ -77,6 +81,32 @@ export class SyncifySettingTab extends PluginSettingTab {
     (this.plugin.settings as unknown as Record<string, unknown>)[key] = value;
     void this.plugin.saveSettings();
     this.plugin.applyAutoSync();
+  }
+
+  private async renderConfigEntries(box: HTMLElement): Promise<void> {
+    const cfg = this.app.vault.configDir;
+    let names: string[] = [];
+    try {
+      const listed = await this.app.vault.adapter.list(cfg);
+      const set = new Set<string>();
+      for (const f of listed.files) set.add(f.slice(cfg.length + 1));
+      for (const d of listed.folders) set.add(d.slice(cfg.length + 1));
+      names = Array.from(set).sort((a, b) => a.localeCompare(b));
+    } catch (e) {
+      box.createEl("p", { text: `Could not list config folder: ${errMsg(e)}`, cls: "mod-warning" });
+      return;
+    }
+    const include = new Set(this.plugin.settings.obsidianInclude);
+    for (const name of names) {
+      new Setting(box).setName(name).addToggle((t) =>
+        t.setValue(include.has(name)).onChange(async (v) => {
+          if (v) include.add(name);
+          else include.delete(name);
+          this.plugin.settings.obsidianInclude = Array.from(include).sort();
+          await this.plugin.saveSettings();
+        }),
+      );
+    }
   }
 
   display(): void {
@@ -174,14 +204,41 @@ export class SyncifySettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Sync .obsidian config")
-      .setDesc(`Sync plugin/theme settings under ${this.app.vault.configDir} (excluding caches and this plugin's folder)`)
+      .setName("Sync config folder")
+      .setDesc(`Sync plugin/theme settings under ${this.app.vault.configDir} (caches, workspace and this plugin's folder are always excluded)`)
       .addToggle((t) =>
         t.setValue(s.syncObsidian).onChange(async (v) => {
           s.syncObsidian = v;
           await this.plugin.saveSettings();
+          this.display();
         }),
       );
+
+    if (s.syncObsidian) {
+      new Setting(containerEl)
+        .setName("Config sync scope")
+        .setDesc("Choose which parts of the config folder sync")
+        .addDropdown((d) =>
+          d
+            .addOption("all", "Everything")
+            .addOption("selected", "Selected folders/files only")
+            .setValue(s.obsidianMode)
+            .onChange(async (v) => {
+              s.obsidianMode = v as SyncifySettings["obsidianMode"];
+              await this.plugin.saveSettings();
+              this.display();
+            }),
+        );
+
+      if (s.obsidianMode === "selected") {
+        const box = containerEl.createDiv("syncify-config-entries");
+        box.createEl("p", {
+          text: `Check the ${this.app.vault.configDir} entries to sync. Unchecked entries stop syncing (server copies are left untouched).`,
+          cls: "setting-item-description",
+        });
+        void this.renderConfigEntries(box);
+      }
+    }
 
     new Setting(containerEl)
       .setName("Exclude patterns")

@@ -200,10 +200,14 @@ export class SyncEngine {
     if (s.syncObsidian) {
       try {
         const listed = await this.app.vault.adapter.list("/");
+        const selected = s.obsidianMode === "selected";
         const include = s.obsidianInclude.map((p) => normalizePath(p));
         for (const p of listed.files) {
           if (!p.startsWith(`${this.configDir}/`)) continue;
-          if (include.length > 0 && !include.some((pref) => p === pref || p.startsWith(pref + "/"))) continue;
+          if (selected) {
+            const rel = p.slice(this.configDir.length + 1);
+            if (!include.some((pref) => rel === pref || rel.startsWith(pref + "/"))) continue;
+          }
           try {
             const st = await this.app.vault.adapter.stat(p);
             if (st && st.type === "file") out.push({ path: canonicalKey(p), size: st.size, mtime: st.mtime });
@@ -216,6 +220,16 @@ export class SyncEngine {
       }
     }
     return out;
+  }
+
+  /** Whether a vault path is inside the config folder and allowed by current config-sync settings. */
+  private configSyncAllowed(path: string): boolean {
+    if (!path.startsWith(`${this.configDir}/`)) return true;
+    const s = this.getSettings();
+    if (!s.syncObsidian) return false;
+    if (s.obsidianMode === "all") return true;
+    const rel = path.slice(this.configDir.length + 1);
+    return s.obsidianInclude.some((pref) => rel === pref || rel.startsWith(pref + "/"));
   }
 
   private async localExists(path: string): Promise<boolean> {
@@ -352,7 +366,7 @@ export class SyncEngine {
 
   private async applyChange(c: Change, report: SyncReport): Promise<void> {
     const key = canonicalKey(c.path);
-    if (this.isExcluded(key)) {
+    if (this.isExcluded(key) || !this.configSyncAllowed(key)) {
       report.skipped++;
       return;
     }
