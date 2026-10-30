@@ -33,6 +33,10 @@ export default class SyncifyPlugin extends Plugin {
         : (window.crypto?.randomUUID?.() ?? `dev-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
     this.settings = { ...defaultSettings(deviceId), ...(stored ?? {}) } as SyncifySettings;
     if (!this.settings.deviceId) this.settings.deviceId = deviceId;
+    if (stored?.deviceId !== this.settings.deviceId) {
+      // persist immediately so every reload keeps the same device identity
+      await this.saveData({ ...this.settings, dataVersion: DATA_VERSION });
+    }
     this.log.setDebug(this.settings.debug);
 
     this.client = new SyncClient({
