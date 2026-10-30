@@ -200,14 +200,15 @@ export class SyncEngine {
     if (s.syncObsidian) {
       try {
         const listed = await this.app.vault.adapter.list("/");
-        const selected = s.obsidianMode === "selected";
         const include = s.obsidianInclude.map((p) => normalizePath(p));
+        const matchesList = (p: string): boolean => {
+          const rel = p.slice(this.configDir.length + 1);
+          return include.some((pref) => rel === pref || rel.startsWith(pref + "/"));
+        };
         for (const p of listed.files) {
           if (!p.startsWith(`${this.configDir}/`)) continue;
-          if (selected) {
-            const rel = p.slice(this.configDir.length + 1);
-            if (!include.some((pref) => rel === pref || rel.startsWith(pref + "/"))) continue;
-          }
+          if (s.obsidianMode === "selected" && !matchesList(p)) continue;
+          if (s.obsidianMode === "exclude" && matchesList(p)) continue;
           try {
             const st = await this.app.vault.adapter.stat(p);
             if (st && st.type === "file") out.push({ path: canonicalKey(p), size: st.size, mtime: st.mtime });
@@ -229,7 +230,8 @@ export class SyncEngine {
     if (!s.syncObsidian) return false;
     if (s.obsidianMode === "all") return true;
     const rel = path.slice(this.configDir.length + 1);
-    return s.obsidianInclude.some((pref) => rel === pref || rel.startsWith(pref + "/"));
+    const matches = s.obsidianInclude.some((pref) => rel === pref || rel.startsWith(pref + "/"));
+    return s.obsidianMode === "selected" ? matches : !matches;
   }
 
   private async localExists(path: string): Promise<boolean> {

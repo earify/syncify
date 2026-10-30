@@ -11,9 +11,11 @@ export interface SyncifySettings {
   autoSync: boolean;
   autoSyncIntervalSec: number;
   syncObsidian: boolean;
-  /** "all": sync the whole config folder (minus hard excludes).
-   *  "selected": sync only the top-level entries listed in obsidianInclude. */
-  obsidianMode: "all" | "selected";
+  /** Config-folder sync scope:
+   *  "all" — sync everything (minus hard excludes)
+   *  "selected" — sync only the entries listed in obsidianInclude
+   *  "exclude" — sync everything except the entries listed in obsidianInclude */
+  obsidianMode: "all" | "selected" | "exclude";
   obsidianInclude: string[];
   excludePatterns: string[];
   maxFileSizeMB: number;
@@ -83,7 +85,7 @@ export class SyncifySettingTab extends PluginSettingTab {
     this.plugin.applyAutoSync();
   }
 
-  private async renderConfigEntries(box: HTMLElement): Promise<void> {
+  private async renderConfigEntries(box: HTMLElement, mode: "sync" | "exclude"): Promise<void> {
     const cfg = this.app.vault.configDir;
     let names: string[] = [];
     try {
@@ -96,13 +98,13 @@ export class SyncifySettingTab extends PluginSettingTab {
       box.createEl("p", { text: `Could not list config folder: ${errMsg(e)}`, cls: "mod-warning" });
       return;
     }
-    const include = new Set(this.plugin.settings.obsidianInclude);
+    const picked = new Set(this.plugin.settings.obsidianInclude);
     for (const name of names) {
       new Setting(box).setName(name).addToggle((t) =>
-        t.setValue(include.has(name)).onChange(async (v) => {
-          if (v) include.add(name);
-          else include.delete(name);
-          this.plugin.settings.obsidianInclude = Array.from(include).sort();
+        t.setValue(picked.has(name)).onChange(async (v) => {
+          if (v) picked.add(name);
+          else picked.delete(name);
+          this.plugin.settings.obsidianInclude = Array.from(picked).sort();
           await this.plugin.saveSettings();
         }),
       );
@@ -222,6 +224,7 @@ export class SyncifySettingTab extends PluginSettingTab {
           d
             .addOption("all", "Everything")
             .addOption("selected", "Selected folders/files only")
+            .addOption("exclude", "Everything except selected")
             .setValue(s.obsidianMode)
             .onChange(async (v) => {
               s.obsidianMode = v as SyncifySettings["obsidianMode"];
@@ -236,7 +239,14 @@ export class SyncifySettingTab extends PluginSettingTab {
           text: `Check the ${this.app.vault.configDir} entries to sync. Unchecked entries stop syncing (server copies are left untouched).`,
           cls: "setting-item-description",
         });
-        void this.renderConfigEntries(box);
+        void this.renderConfigEntries(box, "sync");
+      } else if (s.obsidianMode === "exclude") {
+        const box = containerEl.createDiv("syncify-config-entries");
+        box.createEl("p", {
+          text: `Check the ${this.app.vault.configDir} entries to EXCLUDE from syncing. Everything else syncs normally.`,
+          cls: "setting-item-description",
+        });
+        void this.renderConfigEntries(box, "exclude");
       }
     }
 
