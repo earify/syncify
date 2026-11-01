@@ -157,7 +157,9 @@ export default class SyncifyPlugin extends Plugin {
   }
 
   private async requestAutoSync(reason: string): Promise<void> {
-    if (!this.settings.autoSync) return;
+    // two independent triggers: the interval (autoSync) and local file edits (syncOnFileChange)
+    const allowed = reason === "file-change" ? this.settings.syncOnFileChange : this.settings.autoSync;
+    if (!allowed) return;
     if (!this.settings.vaultId || !this.settings.vaultSecret) return;
     if (this.engine.isCoolingDown) return;
     const now = Date.now();

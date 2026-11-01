@@ -10,6 +10,8 @@ export interface SyncifySettings {
   deviceName: string;
   autoSync: boolean;
   autoSyncIntervalSec: number;
+  /** Sync shortly after local file changes (watcher debounce). */
+  syncOnFileChange: boolean;
   syncObsidian: boolean;
   /** Config-folder sync scope:
    *  "all" — sync the whole config folder (minus hard excludes)
@@ -42,6 +44,7 @@ export function defaultSettings(deviceId: string): SyncifySettings {
     deviceName: defaultDeviceName(),
     autoSync: true,
     autoSyncIntervalSec: 30,
+    syncOnFileChange: true,
     syncObsidian: true,
     obsidianMode: "all",
     obsidianInclude: [],
@@ -80,6 +83,7 @@ export class SyncifySettingTab extends PluginSettingTab {
       { name: "Device name", control: { type: "text", key: "deviceName" } },
       { name: "Auto sync", control: { type: "toggle", key: "autoSync" } },
       { name: "Auto sync interval (seconds)", control: { type: "number", key: "autoSyncIntervalSec" } },
+      { name: "Sync on file changes", control: { type: "toggle", key: "syncOnFileChange" } },
       { name: "Sync config folder", control: { type: "toggle", key: "syncObsidian" } },
       { name: "Max file size (MB)", control: { type: "number", key: "maxFileSizeMB" } },
       { name: "Debug logging", control: { type: "toggle", key: "debug" } },
@@ -289,8 +293,8 @@ export class SyncifySettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("Sync behavior").setHeading();
 
     new Setting(containerEl)
-      .setName("Auto sync")
-      .setDesc("Sync automatically on a timer and on file changes")
+      .setName("Auto sync (interval)")
+      .setDesc("Sync automatically on a timer, on WebSocket pushes and when Obsidian regains focus")
       .addToggle((t) =>
         t.setValue(s.autoSync).onChange(async (v) => {
           s.autoSync = v;
@@ -301,7 +305,7 @@ export class SyncifySettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Auto sync interval (seconds)")
-      .setDesc("Minimum seconds between automatic syncs")
+      .setDesc("Seconds between automatic background syncs")
       .addText((t) =>
         t.setValue(String(s.autoSyncIntervalSec)).onChange(async (v) => {
           const n = Number(v);
@@ -310,6 +314,16 @@ export class SyncifySettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
             this.plugin.applyAutoSync();
           }
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("Sync on file changes")
+      .setDesc("Sync shortly after you edit, create, delete or rename files (independent of the interval)")
+      .addToggle((t) =>
+        t.setValue(s.syncOnFileChange).onChange(async (v) => {
+          s.syncOnFileChange = v;
+          await this.plugin.saveSettings();
         }),
       );
 
