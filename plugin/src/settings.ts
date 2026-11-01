@@ -12,11 +12,14 @@ export interface SyncifySettings {
   autoSyncIntervalSec: number;
   syncObsidian: boolean;
   /** Config-folder sync scope:
-   *  "all" — sync everything (minus hard excludes)
-   *  "selected" — sync only the entries listed in obsidianInclude
-   *  "exclude" — sync everything except the entries listed in obsidianInclude */
-  obsidianMode: "all" | "selected" | "exclude";
+   *  "all" — sync the whole config folder (minus hard excludes)
+   *  "custom" — configRules decide (deepest matching rule wins; "" = root rule) */
+  obsidianMode: "all" | "custom";
+  /** @deprecated kept for migration from 0.1.4–0.1.7 settings */
   obsidianInclude: string[];
+  /** Include/exclude rules for the config folder, relative to configDir.
+   *  path "" is the root rule. Deepest matching rule wins. */
+  configRules: Array<{ path: string; include: boolean }>;
   excludePatterns: string[];
   maxFileSizeMB: number;
   conflictPolicy: "copy" | "server";
@@ -42,11 +45,19 @@ export function defaultSettings(deviceId: string): SyncifySettings {
     syncObsidian: true,
     obsidianMode: "all",
     obsidianInclude: [],
+    configRules: [],
     excludePatterns: [],
     maxFileSizeMB: 50,
     conflictPolicy: "copy",
     debug: false,
   };
+}
+
+interface ConfigTreeNode {
+  name: string;
+  path: string; // relative to configDir
+  isFolder: boolean;
+  children?: ConfigTreeNode[];
 }
 
 export class SyncifySettingTab extends PluginSettingTab {
@@ -85,30 +96,127 @@ export class SyncifySettingTab extends PluginSettingTab {
     this.plugin.applyAutoSync();
   }
 
-  private async renderConfigEntries(box: HTMLElement, mode: "sync" | "exclude"): Promise<void> {
+  /** Effective include state of a config-relative path under the current rules.
+   *  Deepest matching rule wins; path "" (root) is the fallback. */
+  private effectiveConfigState(rules: Array<{ path: string; include: boolean }>, rel: string): boolean {
+    let include = true;
+    let best = -1;
+    for (const r of rules) {
+      const matches = r.path === "" || rel === r.path || rel.startsWith(r.path + "/");
+      if (matches && r.path.length > best) {
+        include = r.include;
+        best = r.path.length;
+      }
+    }
+    return include;
+  }
+
+  /** Mixed state: any descendant disagrees with the node's effective state. */
+  private nodeIsMixed(
+    rules: Array<{ path: string; include: boolean }>,
+    node: ConfigTreeNode,
+    nodeState: boolean,
+  ): boolean {
+    const differs = (n: ConfigTreeNode): boolean =>
+      this.effectiveConfigState(rules, n.path) !== nodeState || (n.children ?? []).some(differs);
+    return (node.children ?? []).some(differs);
+  }
+
+  private async renderConfigTree(box: HTMLElement): Promise<void> {
     const cfg = this.app.vault.configDir;
-    let names: string[] = [];
+    const rules = this.plugin.settings.configRules;
+    let tree: ConfigTreeNode[] = [];
     try {
-      const listed = await this.app.vault.adapter.list(cfg);
-      const set = new Set<string>();
-      for (const f of listed.files) set.add(f.slice(cfg.length + 1));
-      for (const d of listed.folders) set.add(d.slice(cfg.length + 1));
-      names = Array.from(set).sort((a, b) => a.localeCompare(b));
+      tree = await this.buildConfigTree(cfg, 0);
     } catch (e) {
       box.createEl("p", { text: `Could not list config folder: ${errMsg(e)}`, cls: "mod-warning" });
       return;
     }
-    const picked = new Set(this.plugin.settings.obsidianInclude);
-    for (const name of names) {
-      new Setting(box).setName(name).addToggle((t) =>
-        t.setValue(picked.has(name)).onChange(async (v) => {
-          if (v) picked.add(name);
-          else picked.delete(name);
-          this.plugin.settings.obsidianInclude = Array.from(picked).sort();
-          await this.plugin.saveSettings();
-        }),
-      );
+
+    const setRule = (path: string, include: boolean) => {
+      const list = this.plugin.settings.configRules;
+      const existing = list.find((r) => r.path === path);
+      if (existing) existing.include = include;
+      else list.push({ path, include });
+      void this.plugin.saveSettings();
+    };
+
+    const rerender = () => {
+      box.empty();
+      void this.renderConfigTree(box);
+    };
+
+    const renderNode = (container: HTMLElement, node: ConfigTreeNode, depth: number): void => {
+      if (rendered >= MAX_TREE_ROWS) return;
+      rendered++;
+      const state = this.effectiveConfigState(rules, node.path);
+      const hasOwnRule = rules.some((r) => r.path === node.path);
+      const row = container.createDiv("syncify-tree-row");
+      row.style.paddingLeft = `${depth * 16 + 4}px`;
+      row.style.display = "flex";
+      row.style.alignItems = "center";
+      row.style.gap = "6px";
+      const cb = row.createEl("input", { type: "checkbox" });
+      cb.checked = state;
+      cb.indeterminate = this.nodeIsMixed(rules, node, state);
+      cb.addEventListener("change", () => {
+        setRule(node.path, cb.checked);
+        rerender();
+      });
+      row.createSpan({ text: node.name, cls: "syncify-tree-name" });
+      if (hasOwnRule && !state) row.createSpan({ text: "excluded", cls: "syncify-tree-tag" });
+      for (const child of node.children ?? []) renderNode(container, child, depth + 1);
+    };
+
+    let rendered = 0;
+    const MAX_TREE_ROWS = 250;
+
+    // root rule row — the fallback for every unlisted path
+    const rootState = this.effectiveConfigState(rules, "");
+    const rootRow = box.createDiv("syncify-tree-row");
+    rootRow.style.display = "flex";
+    rootRow.style.alignItems = "center";
+    rootRow.style.gap = "6px";
+    rootRow.style.fontWeight = "600";
+    const rootCb = rootRow.createEl("input", { type: "checkbox" });
+    rootCb.checked = rootState;
+    rootCb.indeterminate = tree.some((n) => this.effectiveConfigState(rules, n.path) !== rootState);
+    rootCb.addEventListener("change", () => {
+      setRule("", rootCb.checked);
+      rerender();
+    });
+    rootRow.createSpan({ text: `${cfg} (everything)`, cls: "syncify-tree-name" });
+
+    const list = box.createDiv("syncify-tree-list");
+    for (const n of tree) renderNode(list, n, 0);
+    if (rendered >= MAX_TREE_ROWS) {
+      list.createEl("p", {
+        text: "List truncated — untick large subtrees you don't need to browse into.",
+        cls: "setting-item-description",
+      });
     }
+  }
+
+  private async buildConfigTree(folder: string, depth: number): Promise<ConfigTreeNode[]> {
+    if (depth > 6) return [];
+    const cfg = this.app.vault.configDir;
+    const listed = await this.app.vault.adapter.list(folder);
+    const nodes: ConfigTreeNode[] = [];
+    for (const d of listed.folders) {
+      const rel = d.slice(cfg.length + 1);
+      const name = rel.split("/").pop() ?? rel;
+      if (name === "node_modules") {
+        // treat as a leaf: follows its parent folder's state
+        nodes.push({ name, path: rel, isFolder: true });
+        continue;
+      }
+      nodes.push({ name, path: rel, isFolder: true, children: await this.buildConfigTree(d, depth + 1) });
+    }
+    for (const f of listed.files) {
+      const rel = f.slice(cfg.length + 1);
+      nodes.push({ name: rel.split("/").pop() ?? rel, path: rel, isFolder: false });
+    }
+    return nodes.sort((a, b) => Number(b.isFolder) - Number(a.isFolder) || a.name.localeCompare(b.name));
   }
 
   display(): void {
@@ -219,12 +327,11 @@ export class SyncifySettingTab extends PluginSettingTab {
     if (s.syncObsidian) {
       new Setting(containerEl)
         .setName("Config sync scope")
-        .setDesc("Choose which parts of the config folder sync")
+        .setDesc("Everything syncs as-is, or pick exactly what syncs with the tree below")
         .addDropdown((d) =>
           d
             .addOption("all", "Everything")
-            .addOption("selected", "Selected folders/files only")
-            .addOption("exclude", "Everything except selected")
+            .addOption("custom", "Custom (choose in tree below)")
             .setValue(s.obsidianMode)
             .onChange(async (v) => {
               s.obsidianMode = v as SyncifySettings["obsidianMode"];
@@ -233,20 +340,13 @@ export class SyncifySettingTab extends PluginSettingTab {
             }),
         );
 
-      if (s.obsidianMode === "selected") {
-        const box = containerEl.createDiv("syncify-config-entries");
+      if (s.obsidianMode === "custom") {
+        const box = containerEl.createDiv("syncify-config-tree");
         box.createEl("p", {
-          text: `Check the ${this.app.vault.configDir} entries to sync. Unchecked entries stop syncing (server copies are left untouched).`,
+          text: `Checked = sync, unchecked = skip, dash = mixed. Deeper selections override their parents. Unticked entries stop syncing; server copies are left untouched.`,
           cls: "setting-item-description",
         });
-        void this.renderConfigEntries(box, "sync");
-      } else if (s.obsidianMode === "exclude") {
-        const box = containerEl.createDiv("syncify-config-entries");
-        box.createEl("p", {
-          text: `Check the ${this.app.vault.configDir} entries to EXCLUDE from syncing. Everything else syncs normally.`,
-          cls: "setting-item-description",
-        });
-        void this.renderConfigEntries(box, "exclude");
+        void this.renderConfigTree(box);
       }
     }
 

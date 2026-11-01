@@ -1,5 +1,5 @@
 import { App, Notice, TFile } from "obsidian";
-import { canonicalKey, defaultExcludes, isExcluded, normalizePath, type Change } from "./protocol";
+import { canonicalKey, defaultExcludes, isExcluded, type Change } from "./protocol";
 import { SyncClient, SyncApiError, SyncConflictError } from "./api";
 import { SyncLog } from "./log";
 import type { SyncifySettings } from "./settings";
@@ -198,40 +198,59 @@ export class SyncEngine {
     }
     const s = this.getSettings();
     if (s.syncObsidian) {
-      try {
-        const listed = await this.app.vault.adapter.list("/");
-        const include = s.obsidianInclude.map((p) => normalizePath(p));
-        const matchesList = (p: string): boolean => {
-          const rel = p.slice(this.configDir.length + 1);
-          return include.some((pref) => rel === pref || rel.startsWith(pref + "/"));
-        };
-        for (const p of listed.files) {
-          if (!p.startsWith(`${this.configDir}/`)) continue;
-          if (s.obsidianMode === "selected" && !matchesList(p)) continue;
-          if (s.obsidianMode === "exclude" && matchesList(p)) continue;
-          try {
-            const st = await this.app.vault.adapter.stat(p);
-            if (st && st.type === "file") out.push({ path: canonicalKey(p), size: st.size, mtime: st.mtime });
-          } catch {
-            // stat race (file vanished mid-scan): skip
-          }
-        }
-      } catch (e) {
-        this.log.warn(`config dir scan failed: ${errMsg(e)}`);
-      }
+      const cfgRoot = `${this.configDir}/`;
+      const out_ = await this.collectConfigFiles(cfgRoot, 0);
+      out.push(...out_);
     }
     return out;
   }
 
-  /** Whether a vault path is inside the config folder and allowed by current config-sync settings. */
+  /** Recursively walk the config folder and collect file stats that pass the current rules. */
+  private async collectConfigFiles(dir: string, depth: number): Promise<LocalFileStat[]> {
+    const out: LocalFileStat[] = [];
+    if (depth > 10 || out.length > 20000) return out;
+    let listed;
+    try {
+      listed = await this.app.vault.adapter.list(dir);
+    } catch (e) {
+      this.log.warn(`config dir scan failed for ${dir}: ${errMsg(e)}`);
+      return out;
+    }
+    for (const p of listed.files) {
+      if (this.configSyncAllowed(p)) {
+        try {
+          const st = await this.app.vault.adapter.stat(p);
+          if (st && st.type === "file") out.push({ path: canonicalKey(p), size: st.size, mtime: st.mtime });
+        } catch {
+          // stat race (file vanished mid-scan): skip
+        }
+      }
+    }
+    for (const d of listed.folders) {
+      out.push(...(await this.collectConfigFiles(d, depth + 1)));
+    }
+    return out;
+  }
+
+  /** Whether a vault path is inside the config folder and allowed by current config-sync settings.
+   *  Custom mode: deepest matching configRule wins, root rule ("" ) is the fallback. */
   private configSyncAllowed(path: string): boolean {
     if (!path.startsWith(`${this.configDir}/`)) return true;
     const s = this.getSettings();
     if (!s.syncObsidian) return false;
     if (s.obsidianMode === "all") return true;
     const rel = path.slice(this.configDir.length + 1);
-    const matches = s.obsidianInclude.some((pref) => rel === pref || rel.startsWith(pref + "/"));
-    return s.obsidianMode === "selected" ? matches : !matches;
+    const rules = s.configRules ?? [];
+    let include = true;
+    let best = -1;
+    for (const r of rules) {
+      const matches = r.path === "" || rel === r.path || rel.startsWith(r.path + "/");
+      if (matches && r.path.length > best) {
+        include = r.include;
+        best = r.path.length;
+      }
+    }
+    return include;
   }
 
   private async localExists(path: string): Promise<boolean> {
@@ -588,7 +607,8 @@ export class SyncEngine {
     if (this.index.initialized) {
       for (const key of Object.keys(this.index.files)) {
         if (seen.has(key)) continue;
-        if (this.isExcluded(key)) {
+        if (this.isExcluded(key) || !this.configSyncAllowed(key)) {
+          // still on disk but no longer part of the sync set -> untrack, keep server copy
           delete this.index.files[key];
           continue;
         }

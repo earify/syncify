@@ -37,6 +37,18 @@ export default class SyncifyPlugin extends Plugin {
       // persist immediately so every reload keeps the same device identity
       await this.saveData({ ...this.settings, dataVersion: DATA_VERSION });
     }
+    // migrate 0.1.4–0.1.7 config scope modes into configRules
+    const legacyMode = (stored as { obsidianMode?: string } | null)?.obsidianMode;
+    if (legacyMode === "selected" || legacyMode === "exclude") {
+      const rootInclude = legacyMode === "exclude";
+      const entries = (stored as { obsidianInclude?: string[] }).obsidianInclude ?? [];
+      this.settings.configRules = [
+        { path: "", include: rootInclude },
+        ...entries.map((p) => ({ path: p, include: !rootInclude })),
+      ];
+      this.settings.obsidianMode = "custom";
+      await this.saveData({ ...this.settings, dataVersion: DATA_VERSION });
+    }
     this.log.setDebug(this.settings.debug);
 
     this.client = new SyncClient({
