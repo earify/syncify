@@ -60,6 +60,7 @@ export class SyncEngine {
   private suppressed = new Map<string, number>();
   private cooldownUntil = 0;
   private opsSincePause = 0;
+  private configWalkCount = 0;
 
   private get configDir(): string {
     return this.app.vault.configDir;
@@ -198,6 +199,7 @@ export class SyncEngine {
     }
     const s = this.getSettings();
     if (s.syncObsidian) {
+      this.configWalkCount = 0;
       const cfgRoot = `${this.configDir}/`;
       const out_ = await this.collectConfigFiles(cfgRoot, 0);
       out.push(...out_);
@@ -208,7 +210,7 @@ export class SyncEngine {
   /** Recursively walk the config folder and collect file stats that pass the current rules. */
   private async collectConfigFiles(dir: string, depth: number): Promise<LocalFileStat[]> {
     const out: LocalFileStat[] = [];
-    if (depth > 10 || out.length > 20000) return out;
+    if (depth > 10 || this.configWalkCount > 20000) return out;
     let listed;
     try {
       listed = await this.app.vault.adapter.list(dir);
@@ -217,6 +219,7 @@ export class SyncEngine {
       return out;
     }
     for (const p of listed.files) {
+      this.configWalkCount++;
       if (this.configSyncAllowed(p)) {
         try {
           const st = await this.app.vault.adapter.stat(p);
@@ -238,7 +241,6 @@ export class SyncEngine {
     if (!path.startsWith(`${this.configDir}/`)) return true;
     const s = this.getSettings();
     if (!s.syncObsidian) return false;
-    if (s.obsidianMode === "all") return true;
     const rel = path.slice(this.configDir.length + 1);
     const rules = s.configRules ?? [];
     let include = true;

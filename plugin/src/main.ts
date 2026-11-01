@@ -46,7 +46,6 @@ export default class SyncifyPlugin extends Plugin {
         { path: "", include: rootInclude },
         ...entries.map((p) => ({ path: p, include: !rootInclude })),
       ];
-      this.settings.obsidianMode = "custom";
       await this.saveData({ ...this.settings, dataVersion: DATA_VERSION });
     }
     this.log.setDebug(this.settings.debug);

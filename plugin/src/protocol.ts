@@ -3,15 +3,6 @@
 
 export type Op = "create" | "modify" | "delete" | "move";
 
-export interface FileMeta {
-  path: string; // vault-relative POSIX path
-  size: number;
-  mtime: number; // ms since epoch
-  hash: string; // sha256 hex
-  version: number;
-  deleted?: boolean;
-}
-
 export interface Change {
   seq: number;
   path: string;
@@ -55,14 +46,6 @@ export interface VaultMeta {
   seq: number;
   fileCount: number;
   trashCount: number;
-}
-
-export interface WsMessage {
-  type: "change" | "ping" | "pong" | "auth" | "auth_ok" | "auth_fail" | "error";
-  vaultId?: string;
-  seq?: number;
-  token?: string;
-  message?: string;
 }
 
 /** Default exclude patterns, relative to the vault config dir. */

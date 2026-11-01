@@ -1,5 +1,5 @@
 import { requestUrl } from "obsidian";
-import type { ChangesResponse, ConflictInfo, FileMeta, PushResult, VaultMeta } from "./protocol";
+import type { ChangesResponse, ConflictInfo, PushResult, VaultMeta } from "./protocol";
 
 export class SyncConflictError extends Error {
   constructor(public info: ConflictInfo) {
@@ -121,11 +121,6 @@ export class SyncClient {
       this.headers(),
     );
     return JSON.parse(res.text) as ChangesResponse;
-  }
-
-  async listFiles(): Promise<FileMeta[]> {
-    const res = await this.call("GET", `/api/v1/vaults/${encodeURIComponent(this.opts.vaultId)}/files`, this.headers());
-    return JSON.parse(res.text) as FileMeta[];
   }
 
   async download(path: string): Promise<DownloadResult> {

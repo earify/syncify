@@ -13,14 +13,8 @@ export interface SyncifySettings {
   /** Sync shortly after local file changes (watcher debounce). */
   syncOnFileChange: boolean;
   syncObsidian: boolean;
-  /** Config-folder sync scope:
-   *  "all" — sync the whole config folder (minus hard excludes)
-   *  "custom" — configRules decide (deepest matching rule wins; "" = root rule) */
-  obsidianMode: "all" | "custom";
-  /** @deprecated kept for migration from 0.1.4–0.1.7 settings */
-  obsidianInclude: string[];
   /** Include/exclude rules for the config folder, relative to configDir.
-   *  path "" is the root rule. Deepest matching rule wins. */
+   *  path "" is the root rule. Deepest matching rule wins. No rules = sync all. */
   configRules: Array<{ path: string; include: boolean }>;
   excludePatterns: string[];
   maxFileSizeMB: number;
@@ -46,8 +40,6 @@ export function defaultSettings(deviceId: string): SyncifySettings {
     autoSyncIntervalSec: 30,
     syncOnFileChange: true,
     syncObsidian: true,
-    obsidianMode: "all",
-    obsidianInclude: [],
     configRules: [],
     excludePatterns: [],
     maxFileSizeMB: 50,
@@ -173,7 +165,7 @@ export class SyncifySettingTab extends PluginSettingTab {
     };
 
     let rendered = 0;
-    const MAX_TREE_ROWS = 250;
+    const MAX_TREE_ROWS = 400;
 
     // root rule row — the fallback for every unlisted path
     const rootState = this.effectiveConfigState(rules, "");
@@ -339,29 +331,12 @@ export class SyncifySettingTab extends PluginSettingTab {
       );
 
     if (s.syncObsidian) {
-      new Setting(containerEl)
-        .setName("Config sync scope")
-        .setDesc("Everything syncs as-is, or pick exactly what syncs with the tree below")
-        .addDropdown((d) =>
-          d
-            .addOption("all", "Everything")
-            .addOption("custom", "Custom (choose in tree below)")
-            .setValue(s.obsidianMode)
-            .onChange(async (v) => {
-              s.obsidianMode = v as SyncifySettings["obsidianMode"];
-              await this.plugin.saveSettings();
-              this.display();
-            }),
-        );
-
-      if (s.obsidianMode === "custom") {
-        const box = containerEl.createDiv("syncify-config-tree");
-        box.createEl("p", {
-          text: `Checked = sync, unchecked = skip, dash = mixed. Deeper selections override their parents. Unticked entries stop syncing; server copies are left untouched.`,
-          cls: "setting-item-description",
-        });
-        void this.renderConfigTree(box);
-      }
+      const box = containerEl.createDiv("syncify-config-tree");
+      box.createEl("p", {
+        text: `Pick exactly which files and folders inside ${this.app.vault.configDir} sync. Checked = sync, unchecked = skip, dash = partially selected. Deeper choices override their parents; unticked entries stop syncing (server copies are left untouched).`,
+        cls: "setting-item-description",
+      });
+      void this.renderConfigTree(box);
     }
 
     new Setting(containerEl)
