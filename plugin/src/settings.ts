@@ -8,6 +8,9 @@ export interface SyncifySettings {
   vaultSecret: string;
   deviceId: string;
   deviceName: string;
+  /** Config-folder namespace: pc | tablet | phone. Notes sync across all
+   *  devices; config files sync only between devices with the same profile. */
+  configProfile: "pc" | "tablet" | "phone";
   autoSync: boolean;
   autoSyncIntervalSec: number;
   /** Sync shortly after local file changes (watcher debounce). */
@@ -36,6 +39,7 @@ export function defaultSettings(deviceId: string): SyncifySettings {
     vaultSecret: "",
     deviceId,
     deviceName: defaultDeviceName(),
+    configProfile: "pc",
     autoSync: true,
     autoSyncIntervalSec: 30,
     syncOnFileChange: true,
@@ -226,6 +230,23 @@ export class SyncifySettingTab extends PluginSettingTab {
         });
         t.inputEl.type = "password";
       });
+
+    new Setting(containerEl)
+      .setName("Device profile")
+      .setDesc(
+        `Config folder namespace for this device. Notes and attachments sync across ALL devices; config files sync only between devices with the same profile (PC -> ${this.app.vault.configDir}, tablet -> ${this.app.vault.configDir}.tablet, phone -> ${this.app.vault.configDir}.phone)`,
+      )
+      .addDropdown((d) =>
+        d
+          .addOption("pc", "PC")
+          .addOption("tablet", "Tablet")
+          .addOption("phone", "Phone")
+          .setValue(s.configProfile)
+          .onChange(async (v) => {
+            s.configProfile = v as SyncifySettings["configProfile"];
+            await this.plugin.saveSettings();
+          }),
+      );
 
     new Setting(containerEl)
       .setName("Device name")
