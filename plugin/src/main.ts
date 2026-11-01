@@ -100,6 +100,16 @@ export default class SyncifyPlugin extends Plugin {
       name: "Export diagnostics",
       callback: () => void this.exportDiagnostics(),
     });
+    this.addCommand({
+      id: "upload-config",
+      name: "Upload config to server",
+      callback: () => void this.uploadConfig(),
+    });
+    this.addCommand({
+      id: "load-config",
+      name: "Load config from server",
+      callback: () => void this.loadConfig(),
+    });
 
     // ribbon + status bar
     this.addRibbonIcon("refresh-cw", "Syncify: sync now", () => void this.engine.syncNow("ribbon"));
@@ -258,6 +268,29 @@ export default class SyncifyPlugin extends Plugin {
       new Notice(`Diagnostics written to ${dir}/diagnostics.txt`);
     } catch (e) {
       new Notice(`Diagnostics export failed: ${errMsg(e)}`);
+    }
+  }
+
+  async uploadConfig(): Promise<void> {
+    try {
+      const r = await this.engine.manualUploadConfig();
+      new Notice(
+        `syncify: config uploaded — ↑${r.uploaded} ✕${r.deleted} skipped:${r.skipped} errors:${r.errors.length}`,
+        8000,
+      );
+      for (const err of r.errors.slice(0, 3)) this.log.error(err);
+    } catch (e) {
+      new Notice(`Config upload failed: ${errMsg(e)}`, 8000);
+    }
+  }
+
+  async loadConfig(): Promise<void> {
+    try {
+      const r = await this.engine.manualLoadConfig();
+      new Notice(`syncify: config loaded — ↓${r.loaded} skipped:${r.skipped} errors:${r.errors.length}`, 8000);
+      for (const err of r.errors.slice(0, 3)) this.log.error(err);
+    } catch (e) {
+      new Notice(`Config load failed: ${errMsg(e)}`, 8000);
     }
   }
 }

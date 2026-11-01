@@ -11,12 +11,9 @@ export interface SyncifySettings {
   autoSyncIntervalSec: number;
   /** Sync shortly after local file changes (watcher debounce). */
   syncOnFileChange: boolean;
-  syncObsidian: boolean;
-  /** Globs (relative to the config folder) that never sync - each device keeps
-   *  its own copy, e.g. plugin data.json. */
-  deviceOnlyPatterns: string[];
-  /** Include/exclude rules for the config folder, relative to configDir.
-   *  path "" is the root rule. Deepest matching rule wins. No rules = sync all. */
+  /** The config folder (.obsidian) is NEVER auto-synced. Manual upload/load
+   *  commands respect these include/exclude rules (relative to configDir,
+   *  deepest matching rule wins, "" = root rule, no rules = sync all). */
   configRules: Array<{ path: string; include: boolean }>;
   excludePatterns: string[];
   maxFileSizeMB: number;
@@ -33,8 +30,6 @@ export function defaultSettings(deviceId: string): SyncifySettings {
     autoSync: true,
     autoSyncIntervalSec: 30,
     syncOnFileChange: true,
-    syncObsidian: true,
-    deviceOnlyPatterns: ["**/data.json"],
     configRules: [],
     excludePatterns: [],
     maxFileSizeMB: 50,
@@ -252,7 +247,7 @@ export class SyncifySettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Auto sync (interval)")
-      .setDesc("Sync automatically on a timer, on WebSocket pushes and when Obsidian regains focus")
+      .setDesc("Sync notes and attachments automatically on a timer, on WebSocket pushes and when Obsidian regains focus")
       .addToggle((t) =>
         t.setValue(s.autoSync).onChange(async (v) => {
           s.autoSync = v;
@@ -285,40 +280,59 @@ export class SyncifySettingTab extends PluginSettingTab {
         }),
       );
 
+    new Setting(containerEl).setName("Config folder (.obsidian)").setHeading();
+
     new Setting(containerEl)
-      .setName("Sync config folder")
-      .setDesc(`Sync plugin/theme settings under ${this.app.vault.configDir} (caches, workspace and this plugin's folder are always excluded)`)
-      .addToggle((t) =>
-        t.setValue(s.syncObsidian).onChange(async (v) => {
-          s.syncObsidian = v;
-          await this.plugin.saveSettings();
-          this.display();
-        }),
+      .setName("Manual config sync")
+      .setDesc(
+        `The config folder is NEVER auto-synced. Use the commands below (or the command palette) to upload your config to the server or load the server's config onto this device. The tree picks which entries are included.`,
       );
 
-    if (s.syncObsidian) {
-      const box = containerEl.createDiv("syncify-config-tree");
-      box.createEl("p", {
-        text: `Pick exactly which files and folders inside ${this.app.vault.configDir} sync. Checked = sync, unchecked = skip, dash = partially selected. Deeper choices override their parents; unticked entries stop syncing (server copies are left untouched).`,
-        cls: "setting-item-description",
-      });
-      void this.renderConfigTree(box);
-    }
+    const treeBox = containerEl.createDiv("syncify-config-tree");
+    treeBox.createEl("p", {
+      text: `Checked entries are included in manual upload/load, unchecked are skipped. Deeper choices override their parents.`,
+      cls: "setting-item-description",
+    });
+    void this.renderConfigTree(treeBox);
 
     new Setting(containerEl)
-      .setName("Device-specific files")
-      .setDesc("Globs (relative to the config folder) that stay device-local and never sync, one per line. Default: plugin data.json files — remove a glob to sync that plugin's settings too.")
-      .addTextArea((t) => {
-        t.setValue(s.deviceOnlyPatterns.join("\n")).onChange(async (v) => {
-          s.deviceOnlyPatterns = v
-            .split("\n")
-            .map((x) => x.trim())
-            .filter(Boolean);
-          await this.plugin.saveSettings();
-        });
-        t.inputEl.rows = 3;
-        t.inputEl.addClass("syncify-textarea");
-      });
+      .setName("Run manual config sync")
+      .setDesc("Upload replaces the server's selected config with this device's; Load replaces this device's selected config with the server's. Neither deletes files.")
+      .addButton((b) =>
+        b
+          .setButtonText("Upload to server")
+          .setCta()
+          .onClick(async () => {
+            const btn = b.buttonEl;
+            btn.disabled = true;
+            b.setButtonText("Uploading…");
+            try {
+              await this.plugin.uploadConfig();
+            } catch (e) {
+              new Notice(`Config upload failed: ${errMsg(e)}`, 8000);
+            } finally {
+              btn.disabled = false;
+              b.setButtonText("Upload to server");
+            }
+          }),
+      )
+      .addButton((b) =>
+        b
+          .setButtonText("Load from server")
+          .onClick(async () => {
+            const btn = b.buttonEl;
+            btn.disabled = true;
+            b.setButtonText("Loading…");
+            try {
+              await this.plugin.loadConfig();
+            } catch (e) {
+              new Notice(`Config load failed: ${errMsg(e)}`, 8000);
+            } finally {
+              btn.disabled = false;
+              b.setButtonText("Load from server");
+            }
+          }),
+      );
 
     new Setting(containerEl)
       .setName("Exclude patterns")

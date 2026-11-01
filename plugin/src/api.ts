@@ -123,6 +123,11 @@ export class SyncClient {
     return JSON.parse(res.text) as ChangesResponse;
   }
 
+  async listFiles(): Promise<Array<{ path: string; hash: string; version: number; size: number }>> {
+    const res = await this.call("GET", `/api/v1/vaults/${encodeURIComponent(this.opts.vaultId)}/files`, this.headers());
+    return JSON.parse(res.text) as Array<{ path: string; hash: string; version: number; size: number }>;
+  }
+
   async download(path: string): Promise<DownloadResult> {
     const res = await this.call(
       "GET",

@@ -197,13 +197,7 @@ export class SyncEngine {
     for (const f of this.app.vault.getFiles()) {
       out.push({ path: canonicalKey(f.path), size: f.stat.size, mtime: f.stat.mtime });
     }
-    const s = this.getSettings();
-    if (s.syncObsidian) {
-      this.configWalkCount = 0;
-      const cfgRoot = `${this.configDir}/`;
-      const out_ = await this.collectConfigFiles(cfgRoot, 0);
-      out.push(...out_);
-    }
+    // the config folder (.obsidian) is manual-sync only — never scanned here
     return out;
   }
 
@@ -220,7 +214,7 @@ export class SyncEngine {
     }
     for (const p of listed.files) {
       this.configWalkCount++;
-      if (this.configSyncAllowed(p) && !this.isDeviceOnly(p)) {
+      if (this.configSyncAllowed(p)) {
         try {
           const st = await this.app.vault.adapter.stat(p);
           if (st && st.type === "file") out.push({ path: canonicalKey(p), size: st.size, mtime: st.mtime });
@@ -236,13 +230,11 @@ export class SyncEngine {
   }
 
   /** Whether a vault path is inside the config folder and allowed by current config-sync settings.
-   *  Custom mode: deepest matching configRule wins, root rule ("" ) is the fallback. */
+   *  Deepest matching configRule wins, root rule ("") is the fallback. */
   private configSyncAllowed(path: string): boolean {
     if (!path.startsWith(`${this.configDir}/`)) return true;
-    const s = this.getSettings();
-    if (!s.syncObsidian) return false;
     const rel = path.slice(this.configDir.length + 1);
-    const rules = s.configRules ?? [];
+    const rules = this.getSettings().configRules ?? [];
     let include = true;
     let best = -1;
     for (const r of rules) {
@@ -253,15 +245,6 @@ export class SyncEngine {
       }
     }
     return include;
-  }
-
-  /** Device-local files (e.g. plugin data.json) never sync — each device keeps
-   *  its own so configs can differ slightly between devices. */
-  private isDeviceOnly(path: string): boolean {
-    if (!path.startsWith(`${this.configDir}/`)) return false;
-    const rel = path.slice(this.configDir.length + 1);
-    const patterns = this.getSettings().deviceOnlyPatterns ?? [];
-    return isExcluded(rel, patterns);
   }
 
   private async localExists(path: string): Promise<boolean> {
@@ -398,7 +381,12 @@ export class SyncEngine {
 
   private async applyChange(c: Change, report: SyncReport): Promise<void> {
     const key = canonicalKey(c.path);
-    if (this.isExcluded(key) || !this.configSyncAllowed(key) || this.isDeviceOnly(key)) {
+    if (key === this.configDir || key.startsWith(`${this.configDir}/`)) {
+      // config folder is manual-sync only
+      report.skipped++;
+      return;
+    }
+    if (this.isExcluded(key)) {
       report.skipped++;
       return;
     }
@@ -618,8 +606,8 @@ export class SyncEngine {
     if (this.index.initialized) {
       for (const key of Object.keys(this.index.files)) {
         if (seen.has(key)) continue;
-        if (this.isExcluded(key) || !this.configSyncAllowed(key) || this.isDeviceOnly(key)) {
-          // still on disk but no longer part of the sync set -> untrack, keep server copy
+        if (this.isExcluded(key) || key === this.configDir || key.startsWith(`${this.configDir}/`)) {
+          // never auto-delete config files; untrack only
           delete this.index.files[key];
           continue;
         }
@@ -707,6 +695,106 @@ export class SyncEngine {
     await this.writeBinary(path, dl.data);
     this.index.files[path] = { version: dl.version, hash: dl.hash, size: dl.data.byteLength, mtime: Date.now() };
     this.log.warn(`conflict on ${path}: local copy kept at ${cpath}`);
+  }
+
+  /** Manual: mirror this device's selected config files to the server.
+   *  Uploads overwrite; server files not present locally (and allowed) are
+   *  deleted from the server. Never touches the sync index. */
+  async manualUploadConfig(): Promise<{ uploaded: number; deleted: number; skipped: number; errors: string[] }> {
+    const report = { uploaded: 0, deleted: 0, skipped: 0, errors: [] as string[] };
+    const cfgRoot = `${this.configDir}/`;
+    const local = (await this.collectConfigFiles(cfgRoot, 0)).map((f) => f.path).filter((p) => !this.isExcluded(p));
+    const localSet = new Set(local);
+
+    let serverFiles: Array<{ path: string; hash: string }> = [];
+    try {
+      serverFiles = await this.client.listFiles();
+    } catch (e) {
+      report.errors.push(`list server files: ${errMsg(e)}`);
+    }
+    const serverByPath = new Map(serverFiles.map((f) => [f.path, f]));
+
+    for (const p of local) {
+      try {
+        await this.pace();
+        const buf = await this.readBinary(p);
+        const hash = await sha256Hex(buf);
+        const remote = serverByPath.get(p);
+        if (remote && remote.hash === hash) {
+          report.skipped++;
+          continue;
+        }
+        try {
+          await this.client.upload(p, buf, { baseVersion: 0, mtime: Date.now(), hash });
+          report.uploaded++;
+        } catch (e) {
+          if (e instanceof SyncApiError && e.status === 409) {
+            // deleted on the server earlier; we are re-creating it deliberately
+            await this.client.upload(p, buf, {
+              baseVersion: 0,
+              mtime: Date.now(),
+              hash,
+              seenDeleteVersion: 999999,
+            });
+            report.uploaded++;
+          } else {
+            throw e;
+          }
+        }
+      } catch (e) {
+        report.errors.push(`upload ${p}: ${errMsg(e)}`);
+      }
+    }
+
+    // server-side extras: allowed config files that no longer exist locally
+    const allowedServer = serverFiles.filter(
+      (f) => f.path.startsWith(cfgRoot) && this.configSyncAllowed(f.path) && !this.isExcluded(f.path),
+    );
+    for (const f of allowedServer) {
+      if (localSet.has(f.path)) continue;
+      try {
+        this.suppress(f.path);
+        await this.pace();
+        await this.client.remove(f.path);
+        report.deleted++;
+      } catch (e) {
+        if (SyncEngine.isRateLimit(e)) throw e;
+        report.errors.push(`delete ${f.path}: ${errMsg(e)}`);
+      }
+    }
+    return report;
+  }
+
+  /** Manual: download the server's selected config files onto this device.
+   *  Overwrites local copies; never deletes local files. Never touches the sync index. */
+  async manualLoadConfig(): Promise<{ loaded: number; skipped: number; errors: string[] }> {
+    const report = { loaded: 0, skipped: 0, errors: [] as string[] };
+    const cfgRoot = `${this.configDir}/`;
+    let serverFiles: Array<{ path: string; hash: string }> = [];
+    try {
+      serverFiles = await this.client.listFiles();
+    } catch (e) {
+      throw new Error(`list server files: ${errMsg(e)}`);
+    }
+    const targets = serverFiles.filter(
+      (f) => f.path.startsWith(cfgRoot) && this.configSyncAllowed(f.path) && !this.isExcluded(f.path),
+    );
+    for (const f of targets) {
+      try {
+        await this.pace();
+        const dl = await this.client.download(f.path);
+        await this.writeBinary(f.path, dl.data);
+        report.loaded++;
+      } catch (e) {
+        if (SyncEngine.isRateLimit(e)) throw e;
+        report.errors.push(`load ${f.path}: ${errMsg(e)}`);
+      }
+    }
+    // config paths are not part of auto-sync: drop stale index entries
+    for (const key of Object.keys(this.index.files)) {
+      if (key.startsWith(cfgRoot)) delete this.index.files[key];
+    }
+    return report;
   }
 
   async forceFullResync(): Promise<void> {
