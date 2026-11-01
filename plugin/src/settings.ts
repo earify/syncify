@@ -118,10 +118,7 @@ export class SyncifySettingTab extends PluginSettingTab {
       const state = this.effectiveConfigState(rules, node.path);
       const hasOwnRule = rules.some((r) => r.path === node.path);
       const row = container.createDiv("syncify-tree-row");
-      row.style.paddingLeft = `${depth * 16 + 4}px`;
-      row.style.display = "flex";
-      row.style.alignItems = "center";
-      row.style.gap = "6px";
+      row.setCssProps({ "padding-left": `${depth * 16 + 4}px` });
       const cb = row.createEl("input", { type: "checkbox" });
       cb.checked = state;
       cb.indeterminate = this.nodeIsMixed(rules, node, state);
@@ -139,11 +136,7 @@ export class SyncifySettingTab extends PluginSettingTab {
 
     // root rule row — the fallback for every unlisted path
     const rootState = this.effectiveConfigState(rules, "");
-    const rootRow = box.createDiv("syncify-tree-row");
-    rootRow.style.display = "flex";
-    rootRow.style.alignItems = "center";
-    rootRow.style.gap = "6px";
-    rootRow.style.fontWeight = "600";
+    const rootRow = box.createDiv("syncify-tree-row syncify-tree-root");
     const rootCb = rootRow.createEl("input", { type: "checkbox" });
     rootCb.checked = rootState;
     rootCb.indeterminate = tree.some((n) => this.effectiveConfigState(rules, n.path) !== rootState);

@@ -26,12 +26,13 @@ export default class SyncifyPlugin extends Plugin {
   private statusEl: HTMLElement | null = null;
 
   async onload(): Promise<void> {
-    const stored: StoredData | null = await this.loadData();
+    const raw: unknown = await this.loadData();
+    const stored: Partial<StoredData> = typeof raw === "object" && raw !== null ? (raw as Partial<StoredData>) : {};
     const deviceId =
-      stored?.deviceId && typeof stored.deviceId === "string"
+      stored.deviceId && typeof stored.deviceId === "string"
         ? stored.deviceId
         : (window.crypto?.randomUUID?.() ?? `dev-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
-    this.settings = { ...defaultSettings(deviceId), ...(stored ?? {}) } as SyncifySettings;
+    this.settings = { ...defaultSettings(deviceId), ...stored };
     if (!this.settings.deviceId) this.settings.deviceId = deviceId;
     if (stored?.deviceId !== this.settings.deviceId) {
       // persist immediately so every reload keeps the same device identity
