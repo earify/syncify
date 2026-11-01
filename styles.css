@@ -37,6 +37,13 @@
   gap: 6px;
   padding-block: 1px;
 }
+.syncify-depth-0 { padding-left: 4px; }
+.syncify-depth-1 { padding-left: 20px; }
+.syncify-depth-2 { padding-left: 36px; }
+.syncify-depth-3 { padding-left: 52px; }
+.syncify-depth-4 { padding-left: 68px; }
+.syncify-depth-5 { padding-left: 84px; }
+.syncify-depth-6 { padding-left: 100px; }
 .syncify-tree-root {
   font-weight: 600;
   margin-bottom: 4px;

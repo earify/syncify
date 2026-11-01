@@ -5,7 +5,7 @@ import { SyncLog } from "./log";
 import { SyncifySettingTab, defaultSettings, type SyncifySettings } from "./settings";
 import { SHARE_VIEW_TYPE, ShareListView } from "./share";
 import { VaultWatcher } from "./watcher";
-import { ensureDir, errMsg } from "./util";
+import { ensureDir, errMsg, isRecord } from "./util";
 
 const DATA_VERSION = 1;
 
@@ -27,22 +27,23 @@ export default class SyncifyPlugin extends Plugin {
 
   async onload(): Promise<void> {
     const raw: unknown = await this.loadData();
-    const stored: Partial<StoredData> = typeof raw === "object" && raw !== null ? (raw as Partial<StoredData>) : {};
+    const rec: Record<string, unknown> = isRecord(raw) ? raw : {};
+    const stored: Partial<StoredData> = Object.assign({}, rec);
     const deviceId =
-      stored.deviceId && typeof stored.deviceId === "string"
+      typeof stored.deviceId === "string" && stored.deviceId
         ? stored.deviceId
         : (window.crypto?.randomUUID?.() ?? `dev-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
     this.settings = { ...defaultSettings(deviceId), ...stored };
     if (!this.settings.deviceId) this.settings.deviceId = deviceId;
-    if (stored?.deviceId !== this.settings.deviceId) {
+    if (stored.deviceId !== this.settings.deviceId) {
       // persist immediately so every reload keeps the same device identity
       await this.saveData({ ...this.settings, dataVersion: DATA_VERSION });
     }
     // migrate 0.1.4–0.1.7 config scope modes into configRules
-    const legacyMode = (stored as { obsidianMode?: string } | null)?.obsidianMode;
-    if (legacyMode === "selected" || legacyMode === "exclude") {
-      const rootInclude = legacyMode === "exclude";
-      const entries = (stored as { obsidianInclude?: string[] }).obsidianInclude ?? [];
+    if (rec["obsidianMode"] === "selected" || rec["obsidianMode"] === "exclude") {
+      const rootInclude = rec["obsidianMode"] === "exclude";
+      const inc = rec["obsidianInclude"];
+      const entries = Array.isArray(inc) ? inc.filter((x): x is string => typeof x === "string") : [];
       this.settings.configRules = [
         { path: "", include: rootInclude },
         ...entries.map((p) => ({ path: p, include: !rootInclude })),

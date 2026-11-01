@@ -118,7 +118,7 @@ export class SyncifySettingTab extends PluginSettingTab {
       const state = this.effectiveConfigState(rules, node.path);
       const hasOwnRule = rules.some((r) => r.path === node.path);
       const row = container.createDiv("syncify-tree-row");
-      row.setCssProps({ "padding-left": `${depth * 16 + 4}px` });
+      row.addClass("syncify-depth-" + Math.min(depth, 6));
       const cb = row.createEl("input", { type: "checkbox" });
       cb.checked = state;
       cb.indeterminate = this.nodeIsMixed(rules, node, state);

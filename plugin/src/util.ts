@@ -43,6 +43,11 @@ export async function ensureDir(app: App, dir: string): Promise<void> {
   }
 }
 
+/** Type predicate: narrow an unknown value to a string-keyed record. */
+export function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null;
+}
+
 /** Human-readable message from an unknown thrown value. */
 export function errMsg(e: unknown): string {
   if (e instanceof Error) return e.message;
