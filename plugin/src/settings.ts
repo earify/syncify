@@ -213,7 +213,20 @@ export class SyncifySettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         });
         t.inputEl.type = "password";
-      });
+      })
+      .addExtraButton((b) =>
+        b
+          .setIcon("copy")
+          .setTooltip("Copy vault secret to clipboard")
+          .onClick(async () => {
+            if (!s.vaultSecret) {
+              new Notice("No vault secret set");
+              return;
+            }
+            await navigator.clipboard.writeText(s.vaultSecret);
+            new Notice("Vault secret copied to clipboard");
+          }),
+      );
 
     new Setting(containerEl)
       .setName("Device profile")
