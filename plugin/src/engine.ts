@@ -596,7 +596,7 @@ export class SyncEngine {
       this.index.files[key] = { version: dl.version, hash: dl.hash || remote.hash || "", size: dl.data.byteLength, mtime: Date.now() };
       return;
     }
-    const tag = `${s.deviceName.replace(/[^A-Za-z0-9_-]+/g, "") || "device"}-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    const tag = `${s.deviceId.replace(/[^A-Za-z0-9_-]+/g, "").slice(0, 8)}-${new Date().toISOString().replace(/[:.]/g, "-")}`;
     const cpath = conflictPathFor(key, tag);
     this.log.warn(`conflict on ${key}: local copy kept at ${cpath}`);
     try {
@@ -729,7 +729,7 @@ export class SyncEngine {
       this.log.warn(`conflict on ${path}: took server version`);
       return;
     }
-    const tag = `${s.deviceName.replace(/[^A-Za-z0-9_-]+/g, "") || "device"}-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    const tag = `${s.deviceId.replace(/[^A-Za-z0-9_-]+/g, "").slice(0, 8)}-${new Date().toISOString().replace(/[:.]/g, "-")}`;
     const cpath = conflictPathFor(path, tag);
     await this.writeBinary(cpath, buf);
     const up = await this.client.upload(this.toServerPath(cpath), buf, { baseVersion: 0, mtime: stat.mtime, hash });

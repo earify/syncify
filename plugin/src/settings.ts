@@ -1,4 +1,4 @@
-import { App, Notice, PluginSettingTab, Setting, Platform } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type SyncifyPlugin from "./main";
 import { errMsg } from "./util";
 
@@ -7,7 +7,6 @@ export interface SyncifySettings {
   vaultId: string;
   vaultSecret: string;
   deviceId: string;
-  deviceName: string;
   /** Config-folder namespace: pc | tablet | phone. Notes sync across all
    *  devices; config files sync only between devices with the same profile. */
   configProfile: "pc" | "tablet" | "phone";
@@ -25,20 +24,12 @@ export interface SyncifySettings {
   debug: boolean;
 }
 
-export function defaultDeviceName(): string {
-  if (Platform.isIosApp) return "iOS";
-  if (Platform.isAndroidApp) return "Android";
-  if (Platform.isMobileApp) return "Mobile";
-  return "PC";
-}
-
 export function defaultSettings(deviceId: string): SyncifySettings {
   return {
     serverUrl: "",
     vaultId: "",
     vaultSecret: "",
     deviceId,
-    deviceName: defaultDeviceName(),
     configProfile: "pc",
     autoSync: true,
     autoSyncIntervalSec: 30,
@@ -246,16 +237,6 @@ export class SyncifySettingTab extends PluginSettingTab {
             s.configProfile = v as SyncifySettings["configProfile"];
             await this.plugin.saveSettings();
           }),
-      );
-
-    new Setting(containerEl)
-      .setName("Device name")
-      .setDesc("Label used in conflicts and server change log")
-      .addText((t) =>
-        t.setValue(s.deviceName).onChange(async (v) => {
-          s.deviceName = v.trim() || defaultDeviceName();
-          await this.plugin.saveSettings();
-        }),
       );
 
     new Setting(containerEl)

@@ -251,7 +251,7 @@ export default class SyncifyPlugin extends Plugin {
     const dir = ".syncify";
     try {
       await ensureDir(this.app, dir);
-      const content = `# syncify diagnostics\n- time: ${new Date().toISOString()}\n- plugin: ${this.manifest.version}\n- server: ${this.settings.serverUrl}\n- vaultId: ${this.settings.vaultId}\n- device: ${this.settings.deviceName} (${this.settings.deviceId})\n- lastSeq: ${this.engine.index.lastSeq}\n- tracked files: ${Object.keys(this.engine.index.files).length}\n\n## last report\n\`\`\`\n${JSON.stringify(this.engine.lastReport, null, 2)}\n\`\`\`\n\n## log\n\`\`\`\n${this.log.formatted()}\n\`\`\`\n`;
+      const content = `# syncify diagnostics\n- time: ${new Date().toISOString()}\n- plugin: ${this.manifest.version}\n- server: ${this.settings.serverUrl}\n- vaultId: ${this.settings.vaultId}\n- deviceId: ${this.settings.deviceId}\n- lastSeq: ${this.engine.index.lastSeq}\n- tracked files: ${Object.keys(this.engine.index.files).length}\n\n## last report\n\`\`\`\n${JSON.stringify(this.engine.lastReport, null, 2)}\n\`\`\`\n\n## log\n\`\`\`\n${this.log.formatted()}\n\`\`\`\n`;
       await this.app.vault.adapter.write(`${dir}/diagnostics.txt`, content);
       new Notice(`Diagnostics written to ${dir}/diagnostics.txt`);
     } catch (e) {
