@@ -7,14 +7,14 @@ export interface SyncifySettings {
   vaultId: string;
   vaultSecret: string;
   deviceId: string;
-  /** Config-folder namespace: pc | tablet | phone. Notes sync across all
-   *  devices; config files sync only between devices with the same profile. */
-  configProfile: "pc" | "tablet" | "phone";
   autoSync: boolean;
   autoSyncIntervalSec: number;
   /** Sync shortly after local file changes (watcher debounce). */
   syncOnFileChange: boolean;
   syncObsidian: boolean;
+  /** Globs (relative to the config folder) that never sync - each device keeps
+   *  its own copy, e.g. plugin data.json. */
+  deviceOnlyPatterns: string[];
   /** Include/exclude rules for the config folder, relative to configDir.
    *  path "" is the root rule. Deepest matching rule wins. No rules = sync all. */
   configRules: Array<{ path: string; include: boolean }>;
@@ -30,11 +30,11 @@ export function defaultSettings(deviceId: string): SyncifySettings {
     vaultId: "",
     vaultSecret: "",
     deviceId,
-    configProfile: "pc",
     autoSync: true,
     autoSyncIntervalSec: 30,
     syncOnFileChange: true,
     syncObsidian: true,
+    deviceOnlyPatterns: ["**/data.json"],
     configRules: [],
     excludePatterns: [],
     maxFileSizeMB: 50,
@@ -229,23 +229,6 @@ export class SyncifySettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Device profile")
-      .setDesc(
-        `Config folder namespace for this device. Notes and attachments sync across ALL devices; config files sync only between devices with the same profile (PC -> ${this.app.vault.configDir}, tablet -> ${this.app.vault.configDir}.tablet, phone -> ${this.app.vault.configDir}.phone)`,
-      )
-      .addDropdown((d) =>
-        d
-          .addOption("pc", "PC")
-          .addOption("tablet", "Tablet")
-          .addOption("phone", "Phone")
-          .setValue(s.configProfile)
-          .onChange(async (v) => {
-            s.configProfile = v as SyncifySettings["configProfile"];
-            await this.plugin.saveSettings();
-          }),
-      );
-
-    new Setting(containerEl)
       .setName("Test connection")
       .setDesc("Verify server URL, vault ID and secret")
       .addButton((b) =>
@@ -321,6 +304,21 @@ export class SyncifySettingTab extends PluginSettingTab {
       });
       void this.renderConfigTree(box);
     }
+
+    new Setting(containerEl)
+      .setName("Device-specific files")
+      .setDesc("Globs (relative to the config folder) that stay device-local and never sync, one per line. Default: plugin data.json files — remove a glob to sync that plugin's settings too.")
+      .addTextArea((t) => {
+        t.setValue(s.deviceOnlyPatterns.join("\n")).onChange(async (v) => {
+          s.deviceOnlyPatterns = v
+            .split("\n")
+            .map((x) => x.trim())
+            .filter(Boolean);
+          await this.plugin.saveSettings();
+        });
+        t.inputEl.rows = 3;
+        t.inputEl.addClass("syncify-textarea");
+      });
 
     new Setting(containerEl)
       .setName("Exclude patterns")

@@ -112,35 +112,6 @@ export class SyncEngine {
     private onStateChange: () => void,
   ) {}
 
-  // ---- device-profile config namespaces -----------------------------------------
-
-  /** Server-side config namespace for this device's profile.
-   *  PC keeps the legacy ".obsidian" namespace (existing server data); tablet
-   *  and phone get their own. */
-  private configNamespace(): string {
-    const p = this.getSettings().configProfile ?? "pc";
-    return p === "pc" ? this.configDir : `${this.configDir}.${p}`;
-  }
-
-  /** Local vault path -> server path. Config files are namespaced per profile. */
-  private toServerPath(local: string): string {
-    if (local.startsWith(`${this.configDir}/`)) {
-      return this.configNamespace() + local.slice(this.configDir.length);
-    }
-    return local;
-  }
-
-  /** Server path -> local vault path. Returns null for config paths that belong
-   *  to a foreign device profile (this device must ignore them). */
-  private toLocalPath(server: string): string | null {
-    const ns = this.configNamespace();
-    if (server.startsWith(`${ns}/`)) return this.configDir + server.slice(ns.length);
-    // any other config namespace (.obsidian.<x>, or legacy .obsidian when this
-    // device is not PC) belongs to a different profile
-    if (/^\.obsidian(\.[a-z0-9_-]+)?\//.test(server)) return null;
-    return server;
-  }
-
   // ---- deletion tombstones ------------------------------------------------------
 
   private tombstone(path: string, version: number): void {
@@ -249,7 +220,7 @@ export class SyncEngine {
     }
     for (const p of listed.files) {
       this.configWalkCount++;
-      if (this.configSyncAllowed(p)) {
+      if (this.configSyncAllowed(p) && !this.isDeviceOnly(p)) {
         try {
           const st = await this.app.vault.adapter.stat(p);
           if (st && st.type === "file") out.push({ path: canonicalKey(p), size: st.size, mtime: st.mtime });
@@ -282,6 +253,15 @@ export class SyncEngine {
       }
     }
     return include;
+  }
+
+  /** Device-local files (e.g. plugin data.json) never sync — each device keeps
+   *  its own so configs can differ slightly between devices. */
+  private isDeviceOnly(path: string): boolean {
+    if (!path.startsWith(`${this.configDir}/`)) return false;
+    const rel = path.slice(this.configDir.length + 1);
+    const patterns = this.getSettings().deviceOnlyPatterns ?? [];
+    return isExcluded(rel, patterns);
   }
 
   private async localExists(path: string): Promise<boolean> {
@@ -417,14 +397,8 @@ export class SyncEngine {
   }
 
   private async applyChange(c: Change, report: SyncReport): Promise<void> {
-    const localPath = this.toLocalPath(c.path);
-    if (localPath === null) {
-      // change belongs to another device profile's config namespace
-      report.skipped++;
-      return;
-    }
-    const key = canonicalKey(localPath);
-    if (this.isExcluded(key) || !this.configSyncAllowed(key)) {
+    const key = canonicalKey(c.path);
+    if (this.isExcluded(key) || !this.configSyncAllowed(key) || this.isDeviceOnly(key)) {
       report.skipped++;
       return;
     }
@@ -456,12 +430,7 @@ export class SyncEngine {
       return;
     }
     if (c.op === "move") {
-      const fromLocal = c.fromPath ? this.toLocalPath(c.fromPath) : null;
-      if (fromLocal === null) {
-        report.skipped++;
-        return;
-      }
-      const fromKey = canonicalKey(fromLocal);
+      const fromKey = canonicalKey(c.fromPath ?? "");
       const toKey = key;
       const fromFile = this.app.vault.getAbstractFileByPath(fromKey);
       try {
@@ -601,7 +570,7 @@ export class SyncEngine {
     this.log.warn(`conflict on ${key}: local copy kept at ${cpath}`);
     try {
       await this.writeBinary(cpath, localBuf);
-      const up = await this.client.upload(this.toServerPath(cpath), localBuf, { baseVersion: 0, hash: localHash, mtime: Date.now() });
+      const up = await this.client.upload(cpath, localBuf, { baseVersion: 0, hash: localHash, mtime: Date.now() });
       this.index.files[cpath] = { version: up.version, hash: localHash, size: localBuf.byteLength, mtime: Date.now() };
     } catch (e) {
       report.errors.push(`conflict copy upload ${cpath}: ${errMsg(e)}`);
@@ -649,7 +618,7 @@ export class SyncEngine {
     if (this.index.initialized) {
       for (const key of Object.keys(this.index.files)) {
         if (seen.has(key)) continue;
-        if (this.isExcluded(key) || !this.configSyncAllowed(key)) {
+        if (this.isExcluded(key) || !this.configSyncAllowed(key) || this.isDeviceOnly(key)) {
           // still on disk but no longer part of the sync set -> untrack, keep server copy
           delete this.index.files[key];
           continue;
@@ -658,7 +627,7 @@ export class SyncEngine {
           const ver = this.index.files[key].version;
           this.suppress(key);
           await this.pace();
-          await this.client.remove(this.toServerPath(key), ver);
+          await this.client.remove(key, ver);
           delete this.index.files[key];
           this.tombstone(key, ver);
           report.deleted++;
@@ -681,7 +650,7 @@ export class SyncEngine {
     // re-creating over our own server-side delete: acknowledge it explicitly
     const tsVer = entry ? undefined : this.tombstoneVersion(path);
     try {
-      const res = await this.client.upload(this.toServerPath(path), buf, {
+      const res = await this.client.upload(path, buf, {
         baseVersion: entry?.version ?? 0,
         mtime: stat.mtime,
         hash,
@@ -711,7 +680,7 @@ export class SyncEngine {
     report.conflicts++;
     if (e.info.deleted) {
       // server deleted it; re-upload intentionally marks seen delete
-      const res = await this.client.upload(this.toServerPath(path), buf, {
+      const res = await this.client.upload(path, buf, {
         baseVersion: 0,
         mtime: stat.mtime,
         hash,
@@ -723,7 +692,7 @@ export class SyncEngine {
       return;
     }
     if (s.conflictPolicy === "server") {
-      const dl = await this.client.download(this.toServerPath(path));
+      const dl = await this.client.download(path);
       await this.writeBinary(path, dl.data);
       this.index.files[path] = { version: dl.version, hash: dl.hash, size: dl.data.byteLength, mtime: Date.now() };
       this.log.warn(`conflict on ${path}: took server version`);
@@ -732,9 +701,9 @@ export class SyncEngine {
     const tag = `${s.deviceId.replace(/[^A-Za-z0-9_-]+/g, "").slice(0, 8)}-${new Date().toISOString().replace(/[:.]/g, "-")}`;
     const cpath = conflictPathFor(path, tag);
     await this.writeBinary(cpath, buf);
-    const up = await this.client.upload(this.toServerPath(cpath), buf, { baseVersion: 0, mtime: stat.mtime, hash });
+    const up = await this.client.upload(cpath, buf, { baseVersion: 0, mtime: stat.mtime, hash });
     this.index.files[cpath] = { version: up.version, hash, size: stat.size, mtime: stat.mtime };
-    const dl = await this.client.download(this.toServerPath(path));
+    const dl = await this.client.download(path);
     await this.writeBinary(path, dl.data);
     this.index.files[path] = { version: dl.version, hash: dl.hash, size: dl.data.byteLength, mtime: Date.now() };
     this.log.warn(`conflict on ${path}: local copy kept at ${cpath}`);
