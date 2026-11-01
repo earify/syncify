@@ -120,7 +120,7 @@ export class SyncifySettingTab extends PluginSettingTab {
 
   private async renderConfigTree(box: HTMLElement): Promise<void> {
     const cfg = this.app.vault.configDir;
-    const rules = this.plugin.settings.configRules;
+    const rules = this.plugin.settings.configRules ?? [];
     let tree: ConfigTreeNode[] = [];
     try {
       tree = await this.buildConfigTree(cfg, 0);
