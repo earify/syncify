@@ -43,6 +43,30 @@ export async function ensureDir(app: App, dir: string): Promise<void> {
   }
 }
 
+/** ArrayBuffer -> base64 (chunked btoa, mobile-safe). */
+export function bufToBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let out = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    out += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(out);
+}
+
+/** base64 -> ArrayBuffer (chunked atob, mobile-safe). */
+export function base64ToBuf(b64: string): ArrayBuffer {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes.buffer;
+}
+
+/** UTF-8 string -> ArrayBuffer. */
+export function strToBuf(s: string): ArrayBuffer {
+  return new TextEncoder().encode(s).slice().buffer as ArrayBuffer;
+}
+
 /** Type predicate: narrow an unknown value to a string-keyed record. */
 export function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;

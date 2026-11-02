@@ -1,9 +1,18 @@
 import { App, Notice, TFile } from "obsidian";
 import { canonicalKey, defaultExcludes, isExcluded, type Change } from "./protocol";
-import { SyncClient, SyncApiError, SyncConflictError } from "./api";
+import { SyncClient, SyncApiError, SyncConflictError, type DownloadResult } from "./api";
 import { SyncLog } from "./log";
 import type { SyncifySettings } from "./settings";
-import { conflictPathFor, ensureDir, errMsg, parentDir, sha256Hex } from "./util";
+import {
+  base64ToBuf,
+  bufToBase64,
+  conflictPathFor,
+  ensureDir,
+  errMsg,
+  parentDir,
+  sha256Hex,
+  strToBuf,
+} from "./util";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => window.setTimeout(r, ms));
@@ -43,6 +52,9 @@ export interface SyncReport {
 
 export type SyncState = "idle" | "syncing" | "error";
 
+/** Single-file snapshot that carries the whole config folder (manual sync). */
+const CONFIG_BUNDLE_PATH = ".syncify-config/config-bundle.json";
+
 interface LocalFileStat {
   path: string;
   size: number;
@@ -80,6 +92,7 @@ export class SyncEngine {
       `${this.configDir}/plugins/syncify/**`,
       ".trash/**",
       ".syncify/**",
+      ".syncify-config/**",
     ];
   }
 
@@ -204,7 +217,7 @@ export class SyncEngine {
   /** Recursively walk the config folder and collect file stats that pass the current rules. */
   private async collectConfigFiles(dir: string, depth: number): Promise<LocalFileStat[]> {
     const out: LocalFileStat[] = [];
-    if (depth > 10 || this.configWalkCount > 20000) return out;
+    if (depth > 10 || this.configWalkCount > 100000) return out;
     let listed;
     try {
       listed = await this.app.vault.adapter.list(dir);
@@ -697,100 +710,80 @@ export class SyncEngine {
     this.log.warn(`conflict on ${path}: local copy kept at ${cpath}`);
   }
 
-  /** Manual: mirror this device's selected config files to the server.
-   *  Uploads overwrite; server files not present locally (and allowed) are
-   *  deleted from the server. Never touches the sync index. */
+  /** Manual: snapshot this device's selected config files to the server as a
+   *  single bundle file. Add/overwrite only — nothing is ever deleted. */
   async manualUploadConfig(): Promise<{ uploaded: number; deleted: number; skipped: number; errors: string[] }> {
     const report = { uploaded: 0, deleted: 0, skipped: 0, errors: [] as string[] };
     const cfgRoot = `${this.configDir}/`;
-    const local = (await this.collectConfigFiles(cfgRoot, 0)).map((f) => f.path).filter((p) => !this.isExcluded(p));
-    const localSet = new Set(local);
+    const files = (await this.collectConfigFiles(cfgRoot, 0)).map((f) => f.path).filter((p) => !this.isExcluded(p));
+    const files_ = files.map((p) => canonicalKey(p));
 
-    let serverFiles: Array<{ path: string; hash: string }> = [];
-    try {
-      serverFiles = await this.client.listFiles();
-    } catch (e) {
-      report.errors.push(`list server files: ${errMsg(e)}`);
-    }
-    const serverByPath = new Map(serverFiles.map((f) => [f.path, f]));
-
-    for (const p of local) {
+    const entries: Array<{ path: string; b64: string }> = [];
+    for (const p of files_) {
       try {
-        await this.pace();
         const buf = await this.readBinary(p);
-        const hash = await sha256Hex(buf);
-        const remote = serverByPath.get(p);
-        if (remote && remote.hash === hash) {
-          report.skipped++;
-          continue;
-        }
-        try {
-          await this.client.upload(p, buf, { baseVersion: 0, mtime: Date.now(), hash });
-          report.uploaded++;
-        } catch (e) {
-          if (e instanceof SyncApiError && e.status === 409) {
-            // deleted on the server earlier; we are re-creating it deliberately
-            await this.client.upload(p, buf, {
-              baseVersion: 0,
-              mtime: Date.now(),
-              hash,
-              seenDeleteVersion: 999999,
-            });
-            report.uploaded++;
-          } else {
-            throw e;
-          }
-        }
+        entries.push({ path: p, b64: bufToBase64(buf) });
       } catch (e) {
-        report.errors.push(`upload ${p}: ${errMsg(e)}`);
+        report.errors.push(`read ${p}: ${errMsg(e)}`);
       }
     }
 
-    // server-side extras: allowed config files that no longer exist locally
-    const allowedServer = serverFiles.filter(
-      (f) => f.path.startsWith(cfgRoot) && this.configSyncAllowed(f.path) && !this.isExcluded(f.path),
-    );
-    for (const f of allowedServer) {
-      if (localSet.has(f.path)) continue;
-      try {
-        this.suppress(f.path);
-        await this.pace();
-        await this.client.remove(f.path);
-        report.deleted++;
-      } catch (e) {
-        if (SyncEngine.isRateLimit(e)) throw e;
-        report.errors.push(`delete ${f.path}: ${errMsg(e)}`);
+    const bundle = JSON.stringify({ version: 1, createdAt: Date.now(), count: entries.length, files: entries });
+    const payload = strToBuf(bundle);
+    try {
+      await this.client.upload(CONFIG_BUNDLE_PATH, payload, { baseVersion: 0, mtime: Date.now() });
+    } catch (e) {
+      if (e instanceof SyncApiError && e.status === 409) {
+        // snapshot file was deleted on the server earlier; re-create deliberately
+        await this.client.upload(CONFIG_BUNDLE_PATH, payload, {
+          baseVersion: 0,
+          mtime: Date.now(),
+          seenDeleteVersion: 999999,
+        });
+      } else {
+        throw e;
       }
     }
+    report.uploaded = entries.length;
     return report;
   }
 
-  /** Manual: download the server's selected config files onto this device.
-   *  Overwrites local copies; never deletes local files. Never touches the sync index. */
+  /** Manual: download the server's config snapshot and extract it over this
+   *  device's config folder. Overwrites only — never deletes local files.
+   *  Never touches the sync index. */
   async manualLoadConfig(): Promise<{ loaded: number; skipped: number; errors: string[] }> {
     const report = { loaded: 0, skipped: 0, errors: [] as string[] };
-    const cfgRoot = `${this.configDir}/`;
-    let serverFiles: Array<{ path: string; hash: string }> = [];
+    let dl: DownloadResult;
     try {
-      serverFiles = await this.client.listFiles();
+      dl = await this.client.download(CONFIG_BUNDLE_PATH);
     } catch (e) {
-      throw new Error(`list server files: ${errMsg(e)}`);
+      if (e instanceof SyncApiError && e.status === 404) {
+        throw new Error("no config snapshot on the server yet — upload from a device first");
+      }
+      throw e;
     }
-    const targets = serverFiles.filter(
-      (f) => f.path.startsWith(cfgRoot) && this.configSyncAllowed(f.path) && !this.isExcluded(f.path),
-    );
-    for (const f of targets) {
+    let bundle: { files?: Array<{ path: string; b64?: string }> };
+    try {
+      bundle = JSON.parse(new TextDecoder().decode(dl.data));
+    } catch (e) {
+      throw new Error(`config snapshot is corrupted: ${errMsg(e)}`);
+    }
+    const entries = Array.isArray(bundle.files) ? bundle.files : [];
+    for (const e of entries) {
+      if (typeof e.path !== "string" || typeof e.b64 !== "string") continue;
+      if (!this.configSyncAllowed(e.path) || this.isExcluded(e.path)) {
+        report.skipped++;
+        continue;
+      }
       try {
-        await this.pace();
-        const dl = await this.client.download(f.path);
-        await this.writeBinary(f.path, dl.data);
+        await this.writeBinary(e.path, base64ToBuf(e.b64));
         report.loaded++;
-      } catch (e) {
-        if (SyncEngine.isRateLimit(e)) throw e;
-        report.errors.push(`load ${f.path}: ${errMsg(e)}`);
+      } catch (err) {
+        report.errors.push(`load ${e.path}: ${errMsg(err)}`);
       }
     }
     // config paths are not part of auto-sync: drop stale index entries
+    const cfgRoot = `${this.configDir}/`;
     for (const key of Object.keys(this.index.files)) {
       if (key.startsWith(cfgRoot)) delete this.index.files[key];
     }
