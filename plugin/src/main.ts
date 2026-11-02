@@ -275,7 +275,7 @@ export default class SyncifyPlugin extends Plugin {
     try {
       const r = await this.engine.manualUploadConfig();
       new Notice(
-        `syncify: config uploaded — ↑${r.uploaded} ✕${r.deleted} skipped:${r.skipped} errors:${r.errors.length}`,
+        `syncify: config uploaded - up:${r.uploaded} del:${r.deleted} skip:${r.skipped} err:${r.errors.length}`,
         8000,
       );
       for (const err of r.errors.slice(0, 3)) this.log.error(err);
@@ -287,7 +287,10 @@ export default class SyncifyPlugin extends Plugin {
   async loadConfig(): Promise<void> {
     try {
       const r = await this.engine.manualLoadConfig();
-      new Notice(`syncify: config loaded — ↓${r.loaded} skipped:${r.skipped} errors:${r.errors.length}`, 8000);
+      new Notice(
+        `syncify: config loaded - got:${r.loaded} skip:${r.skipped} err:${r.errors.length}`,
+        8000,
+      );
       for (const err of r.errors.slice(0, 3)) this.log.error(err);
     } catch (e) {
       new Notice(`Config load failed: ${errMsg(e)}`, 8000);

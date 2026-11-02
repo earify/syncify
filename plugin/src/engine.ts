@@ -6,12 +6,12 @@ import type { SyncifySettings } from "./settings";
 import {
   base64ToBuf,
   bufToBase64,
+  strToBuf,
   conflictPathFor,
   ensureDir,
   errMsg,
   parentDir,
   sha256Hex,
-  strToBuf,
 } from "./util";
 
 function sleep(ms: number): Promise<void> {
@@ -52,14 +52,26 @@ export interface SyncReport {
 
 export type SyncState = "idle" | "syncing" | "error";
 
-/** Single-file snapshot that carries the whole config folder (manual sync). */
-const CONFIG_BUNDLE_PATH = ".syncify-config/config-bundle.json";
-
 interface LocalFileStat {
   path: string;
   size: number;
   mtime: number;
 }
+
+/** Single-file snapshot that carries the whole config folder (manual sync). */
+const CONFIG_BUNDLE_PATH = ".syncify-config/config-bundle.json";
+
+interface UploadWork {
+  path: string;
+  hash: string;
+  stat: { size: number; mtime: number };
+  entry?: IndexEntry;
+}
+
+/** Server request spacing (~8 req/s keeps us under the 600/min limit). */
+const REQUEST_SPACING_MS = 125;
+/** Parallel server requests during sync. */
+const CONCURRENCY = 4;
 
 export class SyncEngine {
   index: SyncIndex = { lastSeq: 0, initialized: false, files: {} };
@@ -71,8 +83,9 @@ export class SyncEngine {
   private queueReason = "queued";
   private suppressed = new Map<string, number>();
   private cooldownUntil = 0;
-  private opsSincePause = 0;
   private configWalkCount = 0;
+  private gate: Promise<void> = Promise.resolve();
+  private lastRequestAt = 0;
 
   private get configDir(): string {
     return this.app.vault.configDir;
@@ -92,7 +105,6 @@ export class SyncEngine {
       `${this.configDir}/plugins/syncify/**`,
       ".trash/**",
       ".syncify/**",
-      ".syncify-config/**",
     ];
   }
 
@@ -100,12 +112,17 @@ export class SyncEngine {
     return Date.now() < this.cooldownUntil;
   }
 
-  /** Slow down writes/downloads so we stay well under the server rate limit. */
-  private async pace(): Promise<void> {
-    if (++this.opsSincePause >= 100) {
-      this.opsSincePause = 0;
-      await sleep(2500);
-    }
+  /** Serialize request starts with a minimum spacing — smooth rate limiting
+   *  with no long stalls, safe under the server's per-minute limit even when
+   *  several requests are in flight. */
+  private async throttle(): Promise<void> {
+    const p = this.gate.then(async () => {
+      const wait = this.lastRequestAt + REQUEST_SPACING_MS - Date.now();
+      if (wait > 0) await sleep(wait);
+      this.lastRequestAt = Date.now();
+    });
+    this.gate = p.catch(() => {});
+    await p;
   }
 
   private startCooldown(ms = 60000): void {
@@ -205,16 +222,16 @@ export class SyncEngine {
 
   // ---- local file access helpers -------------------------------------------------
 
+  /** Auto-sync scan: notes/attachments only — the config folder is manual-sync only. */
   private async collectLocalFiles(): Promise<LocalFileStat[]> {
     const out: LocalFileStat[] = [];
     for (const f of this.app.vault.getFiles()) {
       out.push({ path: canonicalKey(f.path), size: f.stat.size, mtime: f.stat.mtime });
     }
-    // the config folder (.obsidian) is manual-sync only — never scanned here
     return out;
   }
 
-  /** Recursively walk the config folder and collect file stats that pass the current rules. */
+  /** Recursive config walk for MANUAL sync (respects tree rules, not hard excludes). */
   private async collectConfigFiles(dir: string, depth: number): Promise<LocalFileStat[]> {
     const out: LocalFileStat[] = [];
     if (depth > 10 || this.configWalkCount > 100000) return out;
@@ -373,18 +390,41 @@ export class SyncEngine {
     return report;
   }
 
+  /** Order-preserving chunks with unique paths per chunk, so chunk items can
+   *  be applied in parallel without reordering same-path changes. */
+  private chunkChanges(changes: Change[], size: number): Change[][] {
+    const chunks: Change[][] = [];
+    let cur: Change[] = [];
+    const inCur = new Set<string>();
+    for (const c of changes) {
+      if (cur.length >= size || inCur.has(c.path)) {
+        chunks.push(cur);
+        cur = [];
+        inCur.clear();
+      }
+      cur.push(c);
+      inCur.add(c.path);
+    }
+    if (cur.length > 0) chunks.push(cur);
+    return chunks;
+  }
+
   private async pullPass(report: SyncReport): Promise<void> {
     let since = this.index.lastSeq;
     let guard = 0;
     while (guard++ < 10000) {
       const res = await this.client.changes(since, 500);
-      for (const c of res.changes) {
-        try {
-          await this.applyChange(c, report);
-        } catch (e) {
-          if (SyncEngine.isRateLimit(e)) throw e;
-          report.errors.push(`pull ${c.path}: ${errMsg(e)}`);
-        }
+      for (const chunk of this.chunkChanges(res.changes, CONCURRENCY)) {
+        await Promise.all(
+          chunk.map(async (c) => {
+            try {
+              await this.applyChange(c, report);
+            } catch (e) {
+              if (SyncEngine.isRateLimit(e)) throw e;
+              report.errors.push(`pull ${c.path}: ${errMsg(e)}`);
+            }
+          }),
+        );
       }
       since = res.hasMore ? res.nextSeq : res.currentSeq;
       this.index.lastSeq = since;
@@ -484,7 +524,7 @@ export class SyncEngine {
     const local = await this.localStat(key);
     if (!local) {
       // server-only file -> download
-      await this.pace();
+      await this.throttle();
       const dl = await this.client.download(c.path);
       if (c.hash && dl.hash && dl.hash !== c.hash) {
         this.log.warn(`download hash mismatch for ${key}; will retry next sync`);
@@ -515,7 +555,7 @@ export class SyncEngine {
         this.log.debug(`first-sync: keeping local ${key} (mtime ${local.mtime} >= ${c.mtime ?? 0})`);
         report.skipped++;
       } else {
-        await this.pace();
+        await this.throttle();
         const dl = await this.client.download(c.path);
         await this.writeBinary(key, dl.data);
         this.index.files[key] = {
@@ -530,7 +570,7 @@ export class SyncEngine {
     }
     if (localHash === entry.hash) {
       // local untouched since last sync -> safe to take server version
-      await this.pace();
+      await this.throttle();
       const dl = await this.client.download(c.path);
       if (c.hash && dl.hash && dl.hash !== c.hash) {
         this.log.warn(`download hash mismatch for ${key}; will retry next sync`);
@@ -558,12 +598,29 @@ export class SyncEngine {
     report: SyncReport,
   ): Promise<void> {
     const s = this.getSettings();
+    await this.throttle();
+    const dl = await this.client.download(remote.path);
+    const serverBuf = dl.data;
+
+    // auto-resolve trivial conflicts — no .conflict file, no data loss
+    if (localBuf.byteLength === 0 && serverBuf.byteLength > 0) {
+      await this.writeBinary(key, serverBuf);
+      this.index.files[key] = { version: dl.version, hash: dl.hash || remote.hash || "", size: serverBuf.byteLength, mtime: Date.now() };
+      this.log.info(`conflict on ${key}: local copy was empty, took server version`);
+      return;
+    }
+    if (serverBuf.byteLength === 0 && localBuf.byteLength > 0) {
+      const up = await this.client.upload(key, localBuf, { baseVersion: 0, hash: localHash, mtime: Date.now() });
+      this.index.files[key] = { version: up.version, hash: localHash, size: localBuf.byteLength, mtime: Date.now() };
+      this.log.info(`conflict on ${key}: server copy was empty, kept local version`);
+      return;
+    }
+
     report.conflicts++;
     if (s.conflictPolicy === "server") {
       this.log.warn(`conflict on ${key}: taking server version`);
-      const dl = await this.client.download(remote.path);
-      await this.writeBinary(key, dl.data);
-      this.index.files[key] = { version: dl.version, hash: dl.hash || remote.hash || "", size: dl.data.byteLength, mtime: Date.now() };
+      await this.writeBinary(key, serverBuf);
+      this.index.files[key] = { version: dl.version, hash: dl.hash || remote.hash || "", size: serverBuf.byteLength, mtime: Date.now() };
       return;
     }
     const tag = `${s.deviceId.replace(/[^A-Za-z0-9_-]+/g, "").slice(0, 8)}-${new Date().toISOString().replace(/[:.]/g, "-")}`;
@@ -576,14 +633,14 @@ export class SyncEngine {
     } catch (e) {
       report.errors.push(`conflict copy upload ${cpath}: ${errMsg(e)}`);
     }
-    const dl = await this.client.download(remote.path);
-    await this.writeBinary(key, dl.data);
-    this.index.files[key] = { version: dl.version, hash: dl.hash || remote.hash || "", size: dl.data.byteLength, mtime: Date.now() };
+    await this.writeBinary(key, serverBuf);
+    this.index.files[key] = { version: dl.version, hash: dl.hash || remote.hash || "", size: serverBuf.byteLength, mtime: Date.now() };
   }
 
   private async pushPass(report: SyncReport): Promise<void> {
     const files = await this.collectLocalFiles();
     const seen = new Set<string>();
+    const work: UploadWork[] = [];
     for (const f of files) {
       seen.add(f.path);
       if (this.isExcluded(f.path)) continue;
@@ -593,30 +650,44 @@ export class SyncEngine {
       }
       const entry = this.index.files[f.path];
       if (entry && entry.size === f.size && entry.mtime === f.mtime) continue;
-      let buf: ArrayBuffer;
-      let hash: string;
       try {
-        buf = await this.readBinary(f.path);
-        hash = await sha256Hex(buf);
+        const buf = await this.readBinary(f.path);
+        const hash = await sha256Hex(buf);
+        if (entry && entry.hash === hash) {
+          this.index.files[f.path] = { version: entry.version, hash, size: f.size, mtime: f.mtime };
+          continue;
+        }
+        work.push({ path: f.path, hash, stat: { size: f.size, mtime: f.mtime }, entry });
       } catch (e) {
         report.errors.push(`read ${f.path}: ${errMsg(e)}`);
-        continue;
-      }
-      if (entry && entry.hash === hash) {
-        this.index.files[f.path] = { version: entry.version, hash, size: f.size, mtime: f.mtime };
-        continue;
-      }
-      try {
-        await this.pace();
-        await this.pushOne(f.path, buf, hash, f, report);
-      } catch (e) {
-        if (SyncEngine.isRateLimit(e)) throw e;
-        report.errors.push(`push ${f.path}: ${errMsg(e)}`);
       }
     }
 
-    // local deletions -> server
-    if (this.index.initialized) {
+    // uploads with bounded concurrency (re-reads local files, bounded memory)
+    let aborted = false;
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(CONCURRENCY, work.length) }, async () => {
+      while (cursor < work.length && !aborted) {
+        const w = work[cursor++];
+        try {
+          await this.throttle();
+          const buf = await this.readBinary(w.path);
+          await this.pushOne(w.path, buf, w.hash, w.stat, w.entry, report);
+        } catch (e) {
+          if (SyncEngine.isRateLimit(e)) {
+            aborted = true;
+            this.startCooldown();
+            report.errors.push(`push paused (rate limited) at ${w.path}: ${errMsg(e)}`);
+          } else {
+            report.errors.push(`push ${w.path}: ${errMsg(e)}`);
+          }
+        }
+      }
+    });
+    await Promise.all(workers);
+
+    // local deletions -> server (sequential, throttled)
+    if (this.index.initialized && !aborted) {
       for (const key of Object.keys(this.index.files)) {
         if (seen.has(key)) continue;
         if (this.isExcluded(key) || key === this.configDir || key.startsWith(`${this.configDir}/`)) {
@@ -627,7 +698,7 @@ export class SyncEngine {
         try {
           const ver = this.index.files[key].version;
           this.suppress(key);
-          await this.pace();
+          await this.throttle();
           await this.client.remove(key, ver);
           delete this.index.files[key];
           this.tombstone(key, ver);
@@ -645,9 +716,9 @@ export class SyncEngine {
     buf: ArrayBuffer,
     hash: string,
     stat: { size: number; mtime: number },
+    entry: IndexEntry | undefined,
     report: SyncReport,
   ): Promise<void> {
-    const entry = this.index.files[path];
     // re-creating over our own server-side delete: acknowledge it explicitly
     const tsVer = entry ? undefined : this.tombstoneVersion(path);
     try {
@@ -678,7 +749,6 @@ export class SyncEngine {
     report: SyncReport,
   ): Promise<void> {
     const s = this.getSettings();
-    report.conflicts++;
     if (e.info.deleted) {
       // server deleted it; re-upload intentionally marks seen delete
       const res = await this.client.upload(path, buf, {
@@ -692,10 +762,29 @@ export class SyncEngine {
       this.log.warn(`recreated ${path} after server-side delete`);
       return;
     }
+
+    await this.throttle();
+    const dl = await this.client.download(path);
+    const serverBuf = dl.data;
+
+    // auto-resolve trivial conflicts — no .conflict file, no data loss
+    if (serverBuf.byteLength === 0 && buf.byteLength > 0) {
+      const res = await this.client.upload(path, buf, { baseVersion: 0, mtime: stat.mtime, hash });
+      this.index.files[path] = { version: res.version, hash, size: stat.size, mtime: stat.mtime };
+      this.log.info(`conflict on ${path}: server copy was empty, kept local version`);
+      return;
+    }
+    if (buf.byteLength === 0 && serverBuf.byteLength > 0) {
+      await this.writeBinary(path, serverBuf);
+      this.index.files[path] = { version: dl.version, hash: dl.hash, size: serverBuf.byteLength, mtime: Date.now() };
+      this.log.info(`conflict on ${path}: local copy was empty, took server version`);
+      return;
+    }
+
+    report.conflicts++;
     if (s.conflictPolicy === "server") {
-      const dl = await this.client.download(path);
-      await this.writeBinary(path, dl.data);
-      this.index.files[path] = { version: dl.version, hash: dl.hash, size: dl.data.byteLength, mtime: Date.now() };
+      await this.writeBinary(path, serverBuf);
+      this.index.files[path] = { version: dl.version, hash: dl.hash, size: serverBuf.byteLength, mtime: Date.now() };
       this.log.warn(`conflict on ${path}: took server version`);
       return;
     }
@@ -704,9 +793,8 @@ export class SyncEngine {
     await this.writeBinary(cpath, buf);
     const up = await this.client.upload(cpath, buf, { baseVersion: 0, mtime: stat.mtime, hash });
     this.index.files[cpath] = { version: up.version, hash, size: stat.size, mtime: stat.mtime };
-    const dl = await this.client.download(path);
-    await this.writeBinary(path, dl.data);
-    this.index.files[path] = { version: dl.version, hash: dl.hash, size: dl.data.byteLength, mtime: Date.now() };
+    await this.writeBinary(path, serverBuf);
+    this.index.files[path] = { version: dl.version, hash: dl.hash, size: serverBuf.byteLength, mtime: Date.now() };
     this.log.warn(`conflict on ${path}: local copy kept at ${cpath}`);
   }
 
@@ -716,10 +804,9 @@ export class SyncEngine {
     const report = { uploaded: 0, deleted: 0, skipped: 0, errors: [] as string[] };
     const cfgRoot = `${this.configDir}/`;
     const files = (await this.collectConfigFiles(cfgRoot, 0)).map((f) => f.path).filter((p) => !this.isExcluded(p));
-    const files_ = files.map((p) => canonicalKey(p));
 
     const entries: Array<{ path: string; b64: string }> = [];
-    for (const p of files_) {
+    for (const p of files) {
       try {
         const buf = await this.readBinary(p);
         entries.push({ path: p, b64: bufToBase64(buf) });
