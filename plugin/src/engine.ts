@@ -84,6 +84,35 @@ export class SyncEngine {
   private suppressed = new Map<string, number>();
   private cooldownUntil = 0;
   private configWalkCount = 0;
+  /** Last manual-load snapshot contents (full local paths). Device-local. */
+  private configManifest: string[] = [];
+
+  private get configManifestPath(): string {
+    return ".syncify/config-manifest.json";
+  }
+
+  private async loadConfigManifest(): Promise<void> {
+    try {
+      if (await this.app.vault.adapter.exists(this.configManifestPath)) {
+        const raw = await this.app.vault.adapter.read(this.configManifestPath);
+        const parsed = JSON.parse(raw);
+        this.configManifest = Array.isArray(parsed)
+          ? parsed.filter((x): x is string => typeof x === "string")
+          : [];
+      }
+    } catch {
+      this.configManifest = [];
+    }
+  }
+
+  private async saveConfigManifest(): Promise<void> {
+    try {
+      await ensureDir(this.app, ".syncify");
+      await this.app.vault.adapter.write(this.configManifestPath, JSON.stringify(this.configManifest));
+    } catch (e) {
+      this.log.warn(`config manifest save failed: ${errMsg(e)}`);
+    }
+  }
   private gate: Promise<void> = Promise.resolve();
   private lastRequestAt = 0;
 
@@ -804,6 +833,8 @@ export class SyncEngine {
     const report = { uploaded: 0, deleted: 0, skipped: 0, errors: [] as string[] };
     const cfgRoot = `${this.configDir}/`;
     const files = (await this.collectConfigFiles(cfgRoot, 0)).map((f) => f.path).filter((p) => !this.isExcluded(p));
+    const files_ = files.map((p) => canonicalKey(p));
+    const localSet = new Set(files_);
 
     const entries: Array<{ path: string; b64: string }> = [];
     for (const p of files) {
@@ -832,14 +863,40 @@ export class SyncEngine {
       }
     }
     report.uploaded = entries.length;
+
+    // mirror deletions: allowed server config files deleted locally -> delete on server
+    let serverFiles: Array<{ path: string }> = [];
+    try {
+      serverFiles = await this.client.listFiles();
+    } catch (e) {
+      report.errors.push(`list server files: ${errMsg(e)}`);
+    }
+    const allowedServer = serverFiles.filter(
+      (f) => f.path.startsWith(cfgRoot) && this.configSyncAllowed(f.path) && !this.isExcluded(f.path),
+    );
+    for (const f of allowedServer) {
+      if (localSet.has(f.path)) continue;
+      try {
+        this.suppress(f.path);
+        await this.throttle();
+        await this.client.remove(f.path);
+        report.deleted++;
+      } catch (e) {
+        if (SyncEngine.isRateLimit(e)) throw e;
+        report.errors.push(`delete ${f.path}: ${errMsg(e)}`);
+      }
+    }
+
+    this.configManifest = files_.slice();
+    await this.saveConfigManifest();
     return report;
   }
 
   /** Manual: download the server's config snapshot and extract it over this
    *  device's config folder. Overwrites only — never deletes local files.
    *  Never touches the sync index. */
-  async manualLoadConfig(): Promise<{ loaded: number; skipped: number; errors: string[] }> {
-    const report = { loaded: 0, skipped: 0, errors: [] as string[] };
+  async manualLoadConfig(): Promise<{ loaded: number; deleted: number; skipped: number; errors: string[] }> {
+    const report = { loaded: 0, deleted: 0, skipped: 0, errors: [] as string[] };
     let dl: DownloadResult;
     try {
       dl = await this.client.download(CONFIG_BUNDLE_PATH);
@@ -856,6 +913,7 @@ export class SyncEngine {
       throw new Error(`config snapshot is corrupted: ${errMsg(e)}`);
     }
     const entries = Array.isArray(bundle.files) ? bundle.files : [];
+    const loadedSet = new Set<string>();
     for (const e of entries) {
       if (typeof e.path !== "string" || typeof e.b64 !== "string") continue;
       if (!this.configSyncAllowed(e.path) || this.isExcluded(e.path)) {
@@ -864,11 +922,26 @@ export class SyncEngine {
       }
       try {
         await this.writeBinary(e.path, base64ToBuf(e.b64));
+        loadedSet.add(e.path);
         report.loaded++;
       } catch (err) {
         report.errors.push(`load ${e.path}: ${errMsg(err)}`);
       }
     }
+    // mirror deletions: files we loaded before but that are gone from the
+    // server snapshot were deleted by the uploading device
+    await this.loadConfigManifest();
+    for (const prev of this.configManifest) {
+      if (loadedSet.has(prev)) continue;
+      if (!this.configSyncAllowed(prev) || this.isExcluded(prev)) continue;
+      if (await this.localExists(prev)) {
+        this.suppress(prev);
+        await this.trashLocalFile(prev);
+        report.deleted++;
+      }
+    }
+    this.configManifest = Array.from(loadedSet);
+    await this.saveConfigManifest();
     // config paths are not part of auto-sync: drop stale index entries
     const cfgRoot = `${this.configDir}/`;
     for (const key of Object.keys(this.index.files)) {
