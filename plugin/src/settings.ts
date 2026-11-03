@@ -11,6 +11,8 @@ export interface SyncifySettings {
   autoSyncIntervalSec: number;
   /** Sync shortly after local file changes (watcher debounce). */
   syncOnFileChange: boolean;
+  /** Skip auto sync when the device reports a cellular connection. */
+  wifiOnly: boolean;
   /** The config folder (.obsidian) is NEVER auto-synced. Manual upload/load
    *  commands respect these include/exclude rules (relative to configDir,
    *  deepest matching rule wins, "" = root rule, no rules = sync all). */
@@ -30,6 +32,7 @@ export function defaultSettings(deviceId: string): SyncifySettings {
     autoSync: true,
     autoSyncIntervalSec: 30,
     syncOnFileChange: true,
+    wifiOnly: false,
     configRules: [],
     excludePatterns: [],
     maxFileSizeMB: 50,
@@ -281,6 +284,16 @@ export class SyncifySettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl).setName("Config folder (.obsidian)").setHeading();
+
+    new Setting(containerEl)
+      .setName("WiFi-only auto sync (mobile)")
+      .setDesc("Skip automatic syncs while the device reports a cellular connection. Manual syncs are unaffected.")
+      .addToggle((t) =>
+        t.setValue(s.wifiOnly).onChange(async (v) => {
+          s.wifiOnly = v;
+          await this.plugin.saveSettings();
+        }),
+      );
 
     new Setting(containerEl)
       .setName("Manual config sync")

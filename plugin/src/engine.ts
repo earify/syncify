@@ -338,13 +338,15 @@ export class SyncEngine {
     return this.app.vault.adapter.readBinary(path);
   }
 
-  private async writeBinary(path: string, data: ArrayBuffer): Promise<void> {
+  /** Write a local file (exposed for the conflict review view). */
+  async writeBinary(path: string, data: ArrayBuffer): Promise<void> {
     await ensureDir(this.app, parentDir(path));
     this.suppress(path);
     await this.app.vault.adapter.writeBinary(path, data);
   }
 
-  private async trashLocalFile(path: string): Promise<void> {
+  /** Move a local file to the trash (exposed for the conflict review view). */
+  async trashLocalFile(path: string): Promise<void> {
     const f = this.app.vault.getAbstractFileByPath(path);
     this.suppress(path);
     if (f) {
@@ -900,23 +902,47 @@ export class SyncEngine {
    *  single bundle file. Add/overwrite only — nothing is ever deleted. */
   async manualUploadConfig(
     onProgress?: (p: ManualProgress) => void,
-  ): Promise<{ uploaded: number; deleted: number; skipped: number; errors: string[] }> {
-    const report = { uploaded: 0, deleted: 0, skipped: 0, errors: [] as string[] };
+    dryRun = false,
+  ): Promise<{
+    uploaded: number;
+    deleted: number;
+    skipped: number;
+    errors: string[];
+    plan: { uploads: string[]; deletes: string[] };
+  }> {
+    const report = {
+      uploaded: 0,
+      deleted: 0,
+      skipped: 0,
+      errors: [] as string[],
+      plan: { uploads: [] as string[], deletes: [] as string[] },
+    };
     const cfgRoot = `${this.configDir}/`;
     // the snapshot path was tombstoned by an older buggy run; clear it so the
     // upload below can re-create the snapshot cleanly
-    this.clearTombstone(CONFIG_BUNDLE_PATH);
+    if (!dryRun) this.clearTombstone(CONFIG_BUNDLE_PATH);
     onProgress?.({ message: "Scanning config folder…", done: 0, total: null });
     const files = (await this.collectConfigFiles(cfgRoot, 0)).map((f) => f.path).filter((p) => !this.isExcluded(p));
     const files_ = files.map((p) => canonicalKey(p));
     const localSet = new Set(files_);
 
-    const entries: Array<{ path: string; b64: string }> = [];
+    let serverFiles: Array<{ path: string; hash: string }> = [];
+    if (!dryRun) {
+      try {
+        serverFiles = await this.client.listFiles();
+      } catch (e) {
+        report.errors.push(`list server files: ${errMsg(e)}`);
+      }
+    }
+    const serverByPath = new Map(serverFiles.map((f) => [f.path, f]));
+
+    const entries: Array<{ path: string; b64: string; hash: string }> = [];
     onProgress?.({ message: "Packing config files…", done: 0, total: files.length });
     for (const p of files) {
       try {
         const buf = await this.readBinary(p);
-        entries.push({ path: p, b64: bufToBase64(buf) });
+        const hash = await sha256Hex(buf);
+        entries.push({ path: p, b64: bufToBase64(buf), hash });
         onProgress?.({ message: "Packing config files…", done: entries.length, total: files.length });
       } catch (e) {
         report.errors.push(`read ${p}: ${errMsg(e)}`);
@@ -925,6 +951,14 @@ export class SyncEngine {
 
     const bundle = JSON.stringify({ version: 1, createdAt: Date.now(), count: entries.length, files: entries });
     const payload = strToBuf(bundle);
+    if (dryRun) {
+      for (const e0 of entries) {
+        const remote = serverByPath.get(e0.path);
+        if (!remote || remote.hash !== e0.hash) report.plan.uploads.push(e0.path);
+      }
+      onProgress?.({ message: "Preview ready", done: 1, total: 1 });
+      return report;
+    }
     try {
       await this.client.upload(CONFIG_BUNDLE_PATH, payload, { baseVersion: 0, mtime: Date.now() });
     } catch (e) {
@@ -942,15 +976,16 @@ export class SyncEngine {
     report.uploaded = entries.length;
 
     // mirror deletions: allowed server config files deleted locally -> delete on server
-    let serverFiles: Array<{ path: string }> = [];
-    try {
-      serverFiles = await this.client.listFiles();
-    } catch (e) {
-      report.errors.push(`list server files: ${errMsg(e)}`);
-    }
     const allowedServer = serverFiles.filter(
       (f) => f.path.startsWith(cfgRoot) && this.configSyncAllowed(f.path) && !this.isExcluded(f.path),
     );
+    if (dryRun) {
+      for (const f of allowedServer) {
+        if (!localSet.has(f.path)) report.plan.deletes.push(f.path);
+      }
+      onProgress?.({ message: "Preview ready", done: 1, total: 1 });
+      return report;
+    }
     onProgress?.({ message: "Removing server extras…", done: 0, total: null });
     for (const f of allowedServer) {
       if (localSet.has(f.path)) continue;
@@ -976,8 +1011,21 @@ export class SyncEngine {
    *  Never touches the sync index. */
   async manualLoadConfig(
     onProgress?: (p: ManualProgress) => void,
-  ): Promise<{ loaded: number; deleted: number; skipped: number; errors: string[] }> {
-    const report = { loaded: 0, deleted: 0, skipped: 0, errors: [] as string[] };
+    dryRun = false,
+  ): Promise<{
+    loaded: number;
+    deleted: number;
+    skipped: number;
+    errors: string[];
+    plan: { loads: string[] };
+  }> {
+    const report = {
+      loaded: 0,
+      deleted: 0,
+      skipped: 0,
+      errors: [] as string[],
+      plan: { loads: [] as string[] },
+    };
     onProgress?.({ message: "Fetching server config…", done: 0, total: null });
     let dl: DownloadResult;
     try {
@@ -1005,6 +1053,11 @@ export class SyncEngine {
         continue;
       }
       try {
+        if (dryRun) {
+          report.plan.loads.push(e.path);
+          report.loaded++;
+          continue;
+        }
         await this.writeBinary(e.path, base64ToBuf(e.b64));
         loadedSet.add(e.path);
         loadedCount++;
@@ -1017,6 +1070,10 @@ export class SyncEngine {
     // mirror deletions: files we loaded before but that are gone from the
     // server snapshot were deleted by the uploading device
     await this.loadConfigManifest();
+    if (dryRun) {
+      onProgress?.({ message: "Preview ready", done: 1, total: 1 });
+      return report;
+    }
     onProgress?.({ message: "Applying server deletions…", done: 0, total: null });
     for (const prev of this.configManifest) {
       if (loadedSet.has(prev)) continue;

@@ -77,3 +77,53 @@
   font-size: 0.85em;
   font-variant-numeric: tabular-nums;
 }
+
+/* conflict review view */
+.syncify-conflict-row {
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.syncify-conflict-path {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.syncify-conflict-sub {
+  color: var(--text-muted);
+  font-size: 0.8em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.syncify-conflict-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+/* server trash view */
+.syncify-trash-controls {
+  margin-bottom: 8px;
+}
+.syncify-trash-filter {
+  width: 100%;
+  padding: 4px 8px;
+}
+.syncify-trash-row {
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.syncify-trash-path {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.syncify-trash-meta {
+  color: var(--text-muted);
+  font-size: 0.8em;
+}
+.syncify-trash-row button {
+  margin-top: 4px;
+}

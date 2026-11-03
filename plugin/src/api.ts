@@ -128,6 +128,30 @@ export class SyncClient {
     return JSON.parse(res.text) as Array<{ path: string; hash: string; version: number; size: number }>;
   }
 
+  async listTrash(): Promise<
+    Array<{ path: string; version: number; size: number; hash: string; deletedAt: number; expiresAt: number }>
+  > {
+    const res = await this.call("GET", `/api/v1/vaults/${encodeURIComponent(this.opts.vaultId)}/trash`, this.headers());
+    return JSON.parse(res.text) as Array<{
+      path: string;
+      version: number;
+      size: number;
+      hash: string;
+      deletedAt: number;
+      expiresAt: number;
+    }>;
+  }
+
+  async restoreFromTrash(path: string): Promise<{ path: string; version: number; seq: number }> {
+    const res = await this.call(
+      "POST",
+      `/api/v1/vaults/${encodeURIComponent(this.opts.vaultId)}/trash/restore`,
+      this.headers({ "content-type": "application/json" }),
+      JSON.stringify({ path }),
+    );
+    return JSON.parse(res.text) as { path: string; version: number; seq: number };
+  }
+
   async download(path: string): Promise<DownloadResult> {
     const res = await this.call(
       "GET",

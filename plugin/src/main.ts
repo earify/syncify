@@ -4,7 +4,10 @@ import { SyncEngine } from "./engine";
 import { SyncLog } from "./log";
 import { SyncifySettingTab, defaultSettings, type SyncifySettings } from "./settings";
 import { SHARE_VIEW_TYPE, ShareListView } from "./share";
-import { VaultWatcher } from "./watcher";;
+import { CONFLICT_VIEW_TYPE, ConflictListView } from "./conflict-view";
+import { TRASH_VIEW_TYPE, TrashListView } from "./trash-view";
+import { confirmList } from "./confirm-modal";
+import { VaultWatcher } from "./watcher";
 import { ensureDir, errMsg, isRecord } from "./util";
 
 const DATA_VERSION = 1;
@@ -74,6 +77,8 @@ export default class SyncifyPlugin extends Plugin {
     for (const ref of this.watcher.start()) this.registerEvent(ref);
 
     this.registerView(SHARE_VIEW_TYPE, (leaf: WorkspaceLeaf) => new ShareListView(leaf, this.client));
+    this.registerView(CONFLICT_VIEW_TYPE, (leaf: WorkspaceLeaf) => new ConflictListView(leaf, this));
+    this.registerView(TRASH_VIEW_TYPE, (leaf: WorkspaceLeaf) => new TrashListView(leaf, this));
 
     // commands
     this.addCommand({
@@ -95,6 +100,16 @@ export default class SyncifyPlugin extends Plugin {
       id: "open-share-view",
       name: "Open shared notes view",
       callback: () => void this.openShareView(),
+    });
+    this.addCommand({
+      id: "review-conflicts",
+      name: "Review sync conflicts",
+      callback: () => void this.openConflictView(),
+    });
+    this.addCommand({
+      id: "browse-trash",
+      name: "Browse file versions (server trash)",
+      callback: () => void this.openTrashView(),
     });
     this.addCommand({
       id: "export-diagnostics",
@@ -172,12 +187,24 @@ export default class SyncifyPlugin extends Plugin {
     // two independent triggers: the interval (autoSync) and local file edits (syncOnFileChange)
     const allowed = reason === "file-change" ? this.settings.syncOnFileChange : this.settings.autoSync;
     if (!allowed) return;
+    if (this.settings.wifiOnly && this.isOnCellular()) return;
     if (!this.settings.vaultId || !this.settings.vaultSecret) return;
     if (this.engine.isCoolingDown) return;
     const now = Date.now();
     if (now - this.lastAutoSync < 4000) return;
     this.lastAutoSync = now;
     await this.engine.syncNow(reason);
+  }
+
+  /** Best-effort cellular detection: skips auto sync when the device reports a
+   *  cellular connection. Unknown connection APIs are treated as allowed. */
+  private isOnCellular(): boolean {
+    const nav = navigator as unknown as {
+      connection?: { type?: string; effectiveType?: string };
+    };
+    const conn = nav.connection;
+    if (!conn) return false;
+    return conn.type === "cellular";
   }
 
   private connectWs(): void {
@@ -286,6 +313,36 @@ export default class SyncifyPlugin extends Plugin {
     if (view instanceof ShareListView) await view.render();
   }
 
+  private async openConflictView(): Promise<void> {
+    const { workspace } = this.app;
+    const existing = workspace.getLeavesOfType(CONFLICT_VIEW_TYPE);
+    let leaf: WorkspaceLeaf;
+    if (existing.length > 0) {
+      leaf = existing[0];
+    } else {
+      leaf = workspace.getRightLeaf(false) ?? workspace.getLeaf(true);
+      await leaf.setViewState({ type: CONFLICT_VIEW_TYPE, active: true });
+    }
+    await workspace.revealLeaf(leaf);
+    const view = leaf.view;
+    if (view instanceof ConflictListView) await view.render();
+  }
+
+  private async openTrashView(): Promise<void> {
+    const { workspace } = this.app;
+    const existing = workspace.getLeavesOfType(TRASH_VIEW_TYPE);
+    let leaf: WorkspaceLeaf;
+    if (existing.length > 0) {
+      leaf = existing[0];
+    } else {
+      leaf = workspace.getRightLeaf(false) ?? workspace.getLeaf(true);
+      await leaf.setViewState({ type: TRASH_VIEW_TYPE, active: true });
+    }
+    await workspace.revealLeaf(leaf);
+    const view = leaf.view;
+    if (view instanceof TrashListView) await view.render();
+  }
+
   async exportDiagnostics(): Promise<void> {
     const dir = ".syncify";
     try {
@@ -298,36 +355,69 @@ export default class SyncifyPlugin extends Plugin {
     }
   }
 
+  /** Manual config upload: dry-run preview first, then confirm + execute. */
   async uploadConfig(): Promise<void> {
-    const notice = new Notice("syncify: config upload started...", 0);
+    const notice = new Notice("syncify: config upload - preparing preview...", 0);
     try {
-      const r = await this.engine.manualUploadConfig((p) => {
-        notice.setMessage(
-          `syncify: config upload - ${p.message}${p.total != null ? ` (${p.done}/${p.total})` : ` (${p.done})`}`,
-        );
-      });
+      const dry = await this.engine.manualUploadConfig((p) => {
+        notice.setMessage(`syncify: preview - ${p.message}`);
+      }, true);
+      const lines = [
+        ...dry.plan.uploads.map((p) => `upload  ${p}`),
+        ...dry.plan.deletes.map((p) => `delete  ${p}`),
+      ];
       notice.hide();
+      if (lines.length === 0) {
+        new Notice("syncify: config is already in sync with the server", 4000);
+        return;
+      }
+      const ok = await confirmList(
+        this.app,
+        `Config upload - ${dry.plan.uploads.length} upload(s), ${dry.plan.deletes.length} delete(s)`,
+        lines,
+      );
+      if (!ok) {
+        new Notice("Config upload cancelled");
+        return;
+      }
+      const prog = new Notice("syncify: uploading config...", 0);
+      const r = await this.engine.manualUploadConfig((p) => {
+        prog.setMessage(`syncify: config upload - ${p.message}`);
+      });
+      prog.hide();
       new Notice(`syncify: config upload complete - up:${r.uploaded} del:${r.deleted} skip:${r.skipped} err:${r.errors.length}`, 8000);
       for (const err of r.errors.slice(0, 3)) this.log.error(err);
     } catch (e) {
-      notice.hide();
       new Notice(`Config upload failed: ${errMsg(e)}`, 8000);
     }
   }
 
+  /** Manual config load: dry-run preview first, then confirm + execute. */
   async loadConfig(): Promise<void> {
-    const notice = new Notice("syncify: config load started...", 0);
+    const notice = new Notice("syncify: config load - preparing preview...", 0);
     try {
-      const r = await this.engine.manualLoadConfig((p) => {
-        notice.setMessage(
-          `syncify: config load - ${p.message}${p.total != null ? ` (${p.done}/${p.total})` : ` (${p.done})`}`,
-        );
-      });
+      const dry = await this.engine.manualLoadConfig((p) => {
+        notice.setMessage(`syncify: preview - ${p.message}`);
+      }, true);
+      const lines = dry.plan.loads.map((p) => `load  ${p}`);
       notice.hide();
+      if (lines.length === 0) {
+        new Notice("syncify: nothing to load from the server", 4000);
+        return;
+      }
+      const ok = await confirmList(this.app, `Config load - ${dry.plan.loads.length} file(s) to overwrite`, lines);
+      if (!ok) {
+        new Notice("Config load cancelled");
+        return;
+      }
+      const prog = new Notice("syncify: loading config...", 0);
+      const r = await this.engine.manualLoadConfig((p) => {
+        prog.setMessage(`syncify: config load - ${p.message}`);
+      });
+      prog.hide();
       new Notice(`syncify: config load complete - got:${r.loaded} del:${r.deleted} skip:${r.skipped} err:${r.errors.length}`, 8000);
       for (const err of r.errors.slice(0, 3)) this.log.error(err);
     } catch (e) {
-      notice.hide();
       new Notice(`Config load failed: ${errMsg(e)}`, 8000);
     }
   }
