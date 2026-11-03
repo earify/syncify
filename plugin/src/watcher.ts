@@ -25,7 +25,8 @@ export class VaultWatcher {
       this.app.vault.on("modify", (f) => this.mark(f)),
       this.app.vault.on("delete", (f) => this.mark(f)),
       this.app.vault.on("rename", (f, oldPath) => {
-        this.engine.suppress(oldPath);
+        // server-side move for real renames; trash moves are deletions
+        this.engine.renameDetected(oldPath, f.path);
         this.mark(f);
       }),
     ];

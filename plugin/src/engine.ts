@@ -115,6 +115,8 @@ export class SyncEngine {
   }
   private gate: Promise<void> = Promise.resolve();
   private lastRequestAt = 0;
+  /** Renames detected by the watcher, applied to the server as move ops. */
+  private pendingRenames: Array<{ from: string; to: string }> = [];
 
   private get configDir(): string {
     return this.app.vault.configDir;
@@ -388,6 +390,7 @@ export class SyncEngine {
     };
     try {
       await this.pullPass(report);
+      await this.movePass(report);
       await this.pushPass(report);
       this.index.initialized = true;
     } catch (e) {
@@ -436,6 +439,40 @@ export class SyncEngine {
     }
     if (cur.length > 0) chunks.push(cur);
     return chunks;
+  }
+
+  /** Queue a rename so the next sync uses the server move op (no
+   *  delete+create duplicates on other devices). Moves into trash folders are
+   *  treated as deletions and handled by the deletion loop instead. */
+  renameDetected(from: string, to: string): void {
+    if (to === ".trash" || to.startsWith(".trash/")) return;
+    if (to === this.configDir || to.startsWith(`${this.configDir}/`)) return;
+    if (from === this.configDir || from.startsWith(`${this.configDir}/`)) return;
+    const fromKey = canonicalKey(from);
+    const toKey = canonicalKey(to);
+    if (fromKey === toKey) return;
+    this.pendingRenames.push({ from: fromKey, to: toKey });
+  }
+
+  /** Apply queued renames via the server move op. */
+  private async movePass(report: SyncReport): Promise<void> {
+    const renames = this.pendingRenames.splice(0);
+    for (const r of renames) {
+      const entry = this.index.files[r.from];
+      if (!entry) continue; // never synced -> the push pass handles 'to' as new
+      if (this.index.files[r.to]) continue; // destination already tracked -> push handles it
+      try {
+        await this.throttle();
+        const res = await this.client.move(r.from, r.to, entry.version);
+        delete this.index.files[r.from];
+        this.index.files[r.to] = { version: res.version, hash: entry.hash, size: entry.size, mtime: entry.mtime };
+        report.pushed++;
+      } catch (e) {
+        if (SyncEngine.isRateLimit(e)) throw e;
+        // stale/conflict -> fall back to the normal delete+create push flow
+        this.log.warn(`move ${r.from} -> ${r.to} deferred to push: ${errMsg(e)}`);
+      }
+    }
   }
 
   private async pullPass(report: SyncReport): Promise<void> {
