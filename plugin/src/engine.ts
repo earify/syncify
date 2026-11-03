@@ -520,6 +520,11 @@ export class SyncEngine {
       report.skipped++;
       return;
     }
+    if (key === CONFIG_BUNDLE_PATH || key.startsWith(`${CONFIG_BUNDLE_PATH.slice(0, -1)}/`)) {
+      // the manual-sync snapshot is device-agnostic; never pull it into the index
+      report.skipped++;
+      return;
+    }
     if (this.isExcluded(key)) {
       report.skipped++;
       return;
@@ -777,8 +782,14 @@ export class SyncEngine {
       onProgress?.({ message: "Applying local deletions...", done: report.deleted, total: null });
       for (const key of Object.keys(this.index.files)) {
         if (seen.has(key)) continue;
-        if (this.isExcluded(key) || key === this.configDir || key.startsWith(`${this.configDir}/`)) {
-          // never auto-delete config files; untrack only
+        if (
+          this.isExcluded(key) ||
+          key === this.configDir ||
+          key.startsWith(`${this.configDir}/`) ||
+          key === CONFIG_BUNDLE_PATH ||
+          key.startsWith(`${CONFIG_BUNDLE_PATH.slice(0, -1)}/`)
+        ) {
+          // never auto-delete config files or the config snapshot; untrack only
           delete this.index.files[key];
           continue;
         }
@@ -892,6 +903,9 @@ export class SyncEngine {
   ): Promise<{ uploaded: number; deleted: number; skipped: number; errors: string[] }> {
     const report = { uploaded: 0, deleted: 0, skipped: 0, errors: [] as string[] };
     const cfgRoot = `${this.configDir}/`;
+    // the snapshot path was tombstoned by an older buggy run; clear it so the
+    // upload below can re-create the snapshot cleanly
+    this.clearTombstone(CONFIG_BUNDLE_PATH);
     onProgress?.({ message: "Scanning config folder…", done: 0, total: null });
     const files = (await this.collectConfigFiles(cfgRoot, 0)).map((f) => f.path).filter((p) => !this.isExcluded(p));
     const files_ = files.map((p) => canonicalKey(p));
