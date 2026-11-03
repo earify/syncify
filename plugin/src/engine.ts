@@ -52,6 +52,12 @@ export interface SyncReport {
 
 export type SyncState = "idle" | "syncing" | "error";
 
+export interface ManualProgress {
+  message: string;
+  done: number;
+  total: number | null;
+}
+
 interface LocalFileStat {
   path: string;
   size: number;
@@ -866,18 +872,23 @@ export class SyncEngine {
 
   /** Manual: snapshot this device's selected config files to the server as a
    *  single bundle file. Add/overwrite only — nothing is ever deleted. */
-  async manualUploadConfig(): Promise<{ uploaded: number; deleted: number; skipped: number; errors: string[] }> {
+  async manualUploadConfig(
+    onProgress?: (p: ManualProgress) => void,
+  ): Promise<{ uploaded: number; deleted: number; skipped: number; errors: string[] }> {
     const report = { uploaded: 0, deleted: 0, skipped: 0, errors: [] as string[] };
     const cfgRoot = `${this.configDir}/`;
+    onProgress?.({ message: "Scanning config folder…", done: 0, total: null });
     const files = (await this.collectConfigFiles(cfgRoot, 0)).map((f) => f.path).filter((p) => !this.isExcluded(p));
     const files_ = files.map((p) => canonicalKey(p));
     const localSet = new Set(files_);
 
     const entries: Array<{ path: string; b64: string }> = [];
+    onProgress?.({ message: "Packing config files…", done: 0, total: files.length });
     for (const p of files) {
       try {
         const buf = await this.readBinary(p);
         entries.push({ path: p, b64: bufToBase64(buf) });
+        onProgress?.({ message: "Packing config files…", done: entries.length, total: files.length });
       } catch (e) {
         report.errors.push(`read ${p}: ${errMsg(e)}`);
       }
@@ -911,6 +922,7 @@ export class SyncEngine {
     const allowedServer = serverFiles.filter(
       (f) => f.path.startsWith(cfgRoot) && this.configSyncAllowed(f.path) && !this.isExcluded(f.path),
     );
+    onProgress?.({ message: "Removing server extras…", done: 0, total: null });
     for (const f of allowedServer) {
       if (localSet.has(f.path)) continue;
       try {
@@ -918,6 +930,7 @@ export class SyncEngine {
         await this.throttle();
         await this.client.remove(f.path);
         report.deleted++;
+        onProgress?.({ message: "Removing server extras…", done: report.deleted, total: null });
       } catch (e) {
         if (SyncEngine.isRateLimit(e)) throw e;
         report.errors.push(`delete ${f.path}: ${errMsg(e)}`);
@@ -932,8 +945,11 @@ export class SyncEngine {
   /** Manual: download the server's config snapshot and extract it over this
    *  device's config folder. Overwrites only — never deletes local files.
    *  Never touches the sync index. */
-  async manualLoadConfig(): Promise<{ loaded: number; deleted: number; skipped: number; errors: string[] }> {
+  async manualLoadConfig(
+    onProgress?: (p: ManualProgress) => void,
+  ): Promise<{ loaded: number; deleted: number; skipped: number; errors: string[] }> {
     const report = { loaded: 0, deleted: 0, skipped: 0, errors: [] as string[] };
+    onProgress?.({ message: "Fetching server config…", done: 0, total: null });
     let dl: DownloadResult;
     try {
       dl = await this.client.download(CONFIG_BUNDLE_PATH);
@@ -951,6 +967,8 @@ export class SyncEngine {
     }
     const entries = Array.isArray(bundle.files) ? bundle.files : [];
     const loadedSet = new Set<string>();
+    onProgress?.({ message: "Loading config files…", done: 0, total: entries.length });
+    let loadedCount = 0;
     for (const e of entries) {
       if (typeof e.path !== "string" || typeof e.b64 !== "string") continue;
       if (!this.configSyncAllowed(e.path) || this.isExcluded(e.path)) {
@@ -960,6 +978,8 @@ export class SyncEngine {
       try {
         await this.writeBinary(e.path, base64ToBuf(e.b64));
         loadedSet.add(e.path);
+        loadedCount++;
+        onProgress?.({ message: "Loading config files…", done: loadedCount, total: entries.length });
         report.loaded++;
       } catch (err) {
         report.errors.push(`load ${e.path}: ${errMsg(err)}`);
@@ -968,6 +988,7 @@ export class SyncEngine {
     // mirror deletions: files we loaded before but that are gone from the
     // server snapshot were deleted by the uploading device
     await this.loadConfigManifest();
+    onProgress?.({ message: "Applying server deletions…", done: 0, total: null });
     for (const prev of this.configManifest) {
       if (loadedSet.has(prev)) continue;
       if (!this.configSyncAllowed(prev) || this.isExcluded(prev)) continue;
@@ -975,6 +996,7 @@ export class SyncEngine {
         this.suppress(prev);
         await this.trashLocalFile(prev);
         report.deleted++;
+        onProgress?.({ message: "Applying server deletions…", done: report.deleted, total: null });
       }
     }
     this.configManifest = Array.from(loadedSet);
