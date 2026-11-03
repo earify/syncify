@@ -24,6 +24,7 @@ export default class SyncifyPlugin extends Plugin {
   private stopWs: (() => void) | null = null;
   private wsConnected = false;
   private statusEl: HTMLElement | null = null;
+  private syncNotice: Notice | null = null;
 
   async onload(): Promise<void> {
     const raw: unknown = await this.loadData();
@@ -78,7 +79,7 @@ export default class SyncifyPlugin extends Plugin {
     this.addCommand({
       id: "sync-now",
       name: "Sync now",
-      callback: () => void this.engine.syncNow("manual"),
+      callback: () => this.runManualSync(),
     });
     this.addCommand({
       id: "force-full-resync",
@@ -112,7 +113,7 @@ export default class SyncifyPlugin extends Plugin {
     });
 
     // ribbon + status bar
-    this.addRibbonIcon("refresh-cw", "Syncify: sync now", () => void this.engine.syncNow("ribbon"));
+    this.addRibbonIcon("refresh-cw", "Syncify: sync now", () => this.runManualSync());
     this.statusEl = this.addStatusBarItem();
     this.updateStatus();
 
@@ -192,6 +193,32 @@ export default class SyncifyPlugin extends Plugin {
         this.updateStatus();
       },
     );
+  }
+
+  /** Manual "Sync now": shows a live corner notice for start/progress/end. */
+  private runManualSync(): void {
+    if (this.syncNotice) this.syncNotice.hide();
+    const notice = new Notice("syncify: sync started...", 0);
+    this.syncNotice = notice;
+    void this.engine
+      .syncNow("manual", (p) => {
+        notice.setMessage(`syncify: sync - ${p.message}`);
+      })
+      .then((rep) => {
+        notice.hide();
+        this.syncNotice = null;
+        if (rep) {
+          new Notice(
+            `syncify: sync complete - up:${rep.pushed} down:${rep.pulled} del:${rep.deleted} conflict:${rep.conflicts} err:${rep.errors.length}`,
+            6000,
+          );
+        }
+      })
+      .catch((e) => {
+        notice.hide();
+        this.syncNotice = null;
+        new Notice(`Sync failed: ${errMsg(e)}`, 8000);
+      });
   }
 
   private updateStatus(): void {

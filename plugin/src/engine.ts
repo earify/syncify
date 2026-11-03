@@ -369,7 +369,10 @@ export class SyncEngine {
 
   // ---- sync ----------------------------------------------------------------------
 
-  async syncNow(reason = "manual"): Promise<SyncReport | null> {
+  async syncNow(
+    reason = "manual",
+    onProgress?: (p: { message: string; done: number; total: number | null }) => void,
+  ): Promise<SyncReport | null> {
     if (this.syncing) {
       this.queued = true;
       this.queueReason = reason;
@@ -383,6 +386,7 @@ export class SyncEngine {
     this.syncing = true;
     this.state = "syncing";
     this.onStateChange();
+    onProgress?.({ message: "Pulling remote changes...", done: 0, total: null });
     const started = Date.now();
     const report: SyncReport = {
       pulled: 0,
@@ -395,9 +399,9 @@ export class SyncEngine {
       reason,
     };
     try {
-      await this.pullPass(report);
+      await this.pullPass(report, onProgress);
       await this.movePass(report);
-      await this.pushPass(report);
+      await this.pushPass(report, onProgress);
       this.index.initialized = true;
     } catch (e) {
       if (SyncEngine.isRateLimit(e)) this.startCooldown();
@@ -410,6 +414,7 @@ export class SyncEngine {
       this.syncing = false;
       this.onStateChange();
       await this.saveIndex();
+      onProgress?.({ message: "Done", done: 1, total: 1 });
     }
     if (this.queued) {
       this.queued = false;
@@ -481,7 +486,10 @@ export class SyncEngine {
     }
   }
 
-  private async pullPass(report: SyncReport): Promise<void> {
+  private async pullPass(
+    report: SyncReport,
+    onProgress?: (p: { message: string; done: number; total: number | null }) => void,
+  ): Promise<void> {
     let since = this.index.lastSeq;
     let guard = 0;
     while (guard++ < 10000) {
@@ -491,6 +499,7 @@ export class SyncEngine {
           chunk.map(async (c) => {
             try {
               await this.applyChange(c, report);
+              onProgress?.({ message: "Pulling remote changes...", done: report.pulled, total: null });
             } catch (e) {
               if (SyncEngine.isRateLimit(e)) throw e;
               report.errors.push(`pull ${c.path}: ${errMsg(e)}`);
@@ -709,7 +718,10 @@ export class SyncEngine {
     this.index.files[key] = { version: dl.version, hash: dl.hash || remote.hash || "", size: serverBuf.byteLength, mtime: Date.now() };
   }
 
-  private async pushPass(report: SyncReport): Promise<void> {
+  private async pushPass(
+    report: SyncReport,
+    onProgress?: (p: { message: string; done: number; total: number | null }) => void,
+  ): Promise<void> {
     const files = await this.collectLocalFiles();
     const seen = new Set<string>();
     const work: UploadWork[] = [];
@@ -738,6 +750,7 @@ export class SyncEngine {
     // uploads with bounded concurrency (re-reads local files, bounded memory)
     let aborted = false;
     let cursor = 0;
+    onProgress?.({ message: "Uploading local changes...", done: report.pushed, total: null });
     const workers = Array.from({ length: Math.min(CONCURRENCY, work.length) }, async () => {
       while (cursor < work.length && !aborted) {
         const w = work[cursor++];
@@ -745,6 +758,7 @@ export class SyncEngine {
           await this.throttle();
           const buf = await this.readBinary(w.path);
           await this.pushOne(w.path, buf, w.hash, w.stat, w.entry, report);
+          onProgress?.({ message: "Uploading local changes...", done: report.pushed, total: null });
         } catch (e) {
           if (SyncEngine.isRateLimit(e)) {
             aborted = true;
@@ -760,6 +774,7 @@ export class SyncEngine {
 
     // local deletions -> server (sequential, throttled)
     if (this.index.initialized && !aborted) {
+      onProgress?.({ message: "Applying local deletions...", done: report.deleted, total: null });
       for (const key of Object.keys(this.index.files)) {
         if (seen.has(key)) continue;
         if (this.isExcluded(key) || key === this.configDir || key.startsWith(`${this.configDir}/`)) {
