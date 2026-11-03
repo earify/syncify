@@ -4,8 +4,7 @@ import { SyncEngine } from "./engine";
 import { SyncLog } from "./log";
 import { SyncifySettingTab, defaultSettings, type SyncifySettings } from "./settings";
 import { SHARE_VIEW_TYPE, ShareListView } from "./share";
-import { VaultWatcher } from "./watcher";
-import { SyncifyProgressModal } from "./progress-modal";
+import { VaultWatcher } from "./watcher";;
 import { ensureDir, errMsg, isRecord } from "./util";
 
 const DATA_VERSION = 1;
@@ -273,31 +272,35 @@ export default class SyncifyPlugin extends Plugin {
   }
 
   async uploadConfig(): Promise<void> {
-    const modal = new SyncifyProgressModal(this.app, "Config sync - Upload");
-    modal.open();
+    const notice = new Notice("syncify: config upload started...", 0);
     try {
       const r = await this.engine.manualUploadConfig((p) => {
-        modal.message(p.message);
-        modal.progress(p.done, p.total);
+        notice.setMessage(
+          `syncify: config upload - ${p.message}${p.total != null ? ` (${p.done}/${p.total})` : ` (${p.done})`}`,
+        );
       });
-      modal.finish(`Upload complete - up:${r.uploaded} del:${r.deleted} skip:${r.skipped} err:${r.errors.length}`);
+      notice.hide();
+      new Notice(`syncify: config upload complete - up:${r.uploaded} del:${r.deleted} skip:${r.skipped} err:${r.errors.length}`, 8000);
       for (const err of r.errors.slice(0, 3)) this.log.error(err);
     } catch (e) {
+      notice.hide();
       new Notice(`Config upload failed: ${errMsg(e)}`, 8000);
     }
   }
 
   async loadConfig(): Promise<void> {
-    const modal = new SyncifyProgressModal(this.app, "Config sync - Load");
-    modal.open();
+    const notice = new Notice("syncify: config load started...", 0);
     try {
       const r = await this.engine.manualLoadConfig((p) => {
-        modal.message(p.message);
-        modal.progress(p.done, p.total);
+        notice.setMessage(
+          `syncify: config load - ${p.message}${p.total != null ? ` (${p.done}/${p.total})` : ` (${p.done})`}`,
+        );
       });
-      modal.finish(`Load complete - got:${r.loaded} del:${r.deleted} skip:${r.skipped} err:${r.errors.length}`);
+      notice.hide();
+      new Notice(`syncify: config load complete - got:${r.loaded} del:${r.deleted} skip:${r.skipped} err:${r.errors.length}`, 8000);
       for (const err of r.errors.slice(0, 3)) this.log.error(err);
     } catch (e) {
+      notice.hide();
       new Notice(`Config load failed: ${errMsg(e)}`, 8000);
     }
   }
