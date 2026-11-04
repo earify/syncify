@@ -89,7 +89,6 @@ export default class SyncifyPlugin extends Plugin {
       callback: () => void this.engine.forceFullResync(),
     });
     this.addCommand({
-    this.addCommand({
       id: "review-conflicts",
       name: "Review sync conflicts",
       callback: () => void this.openConflictView(),
