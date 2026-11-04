@@ -3,7 +3,6 @@ import { SyncClient } from "./api";
 import { SyncEngine } from "./engine";
 import { SyncLog } from "./log";
 import { SyncifySettingTab, defaultSettings, type SyncifySettings } from "./settings";
-import { SHARE_VIEW_TYPE, ShareListView } from "./share";
 import { CONFLICT_VIEW_TYPE, ConflictListView } from "./conflict-view";
 import { TRASH_VIEW_TYPE, TrashListView } from "./trash-view";
 import { VaultWatcher } from "./watcher";
@@ -75,7 +74,6 @@ export default class SyncifyPlugin extends Plugin {
     });
     for (const ref of this.watcher.start()) this.registerEvent(ref);
 
-    this.registerView(SHARE_VIEW_TYPE, (leaf: WorkspaceLeaf) => new ShareListView(leaf, this.client));
     this.registerView(CONFLICT_VIEW_TYPE, (leaf: WorkspaceLeaf) => new ConflictListView(leaf, this));
     this.registerView(TRASH_VIEW_TYPE, (leaf: WorkspaceLeaf) => new TrashListView(leaf, this));
 
@@ -91,15 +89,6 @@ export default class SyncifyPlugin extends Plugin {
       callback: () => void this.engine.forceFullResync(),
     });
     this.addCommand({
-      id: "copy-share-link",
-      name: "Copy share link for current note",
-      callback: () => void this.copyShareLink(),
-    });
-    this.addCommand({
-      id: "open-share-view",
-      name: "Open shared notes view",
-      callback: () => void this.openShareView(),
-    });
     this.addCommand({
       id: "review-conflicts",
       name: "Review sync conflicts",
@@ -274,42 +263,6 @@ export default class SyncifyPlugin extends Plugin {
         `last sync (${rep.reason}): ↑${rep.pushed} sent, ↓${rep.pulled} received, ✕${rep.deleted} deleted, =${rep.skipped} skipped, conflicts: ${rep.conflicts}${errs}`,
       );
     }
-  }
-
-  private async copyShareLink(): Promise<void> {
-    const active = this.app.workspace.getActiveFile();
-    if (!(active instanceof TFile)) {
-      new Notice("Open a note to share");
-      return;
-    }
-    try {
-      // make sure the file exists on the server first
-      if (!this.engine.index.files[active.path]) {
-        new Notice("Syncing file first…");
-        await this.engine.syncNow("share-prepush");
-      }
-      const share = await this.client.createShare(active.path);
-      const url = this.client.shareUrl(share.shareId);
-      await navigator.clipboard.writeText(url);
-      new Notice(`Share link copied:\n${url}`, 8000);
-    } catch (e) {
-      new Notice(`Share failed: ${errMsg(e)}`, 8000);
-    }
-  }
-
-  private async openShareView(): Promise<void> {
-    const { workspace } = this.app;
-    const existing = workspace.getLeavesOfType(SHARE_VIEW_TYPE);
-    let leaf: WorkspaceLeaf;
-    if (existing.length > 0) {
-      leaf = existing[0];
-    } else {
-      leaf = workspace.getRightLeaf(false) ?? workspace.getLeaf(true);
-      await leaf.setViewState({ type: SHARE_VIEW_TYPE, active: true });
-    }
-    await workspace.revealLeaf(leaf);
-    const view = leaf.view;
-    if (view instanceof ShareListView) await view.render();
   }
 
   private async openConflictView(): Promise<void> {
