@@ -6,7 +6,6 @@ import { SyncifySettingTab, defaultSettings, type SyncifySettings } from "./sett
 import { SHARE_VIEW_TYPE, ShareListView } from "./share";
 import { CONFLICT_VIEW_TYPE, ConflictListView } from "./conflict-view";
 import { TRASH_VIEW_TYPE, TrashListView } from "./trash-view";
-import { confirmList } from "./confirm-modal";
 import { VaultWatcher } from "./watcher";
 import { ensureDir, errMsg, isRecord } from "./util";
 
@@ -355,69 +354,32 @@ export default class SyncifyPlugin extends Plugin {
     }
   }
 
-  /** Manual config upload: dry-run preview first, then confirm + execute. */
   async uploadConfig(): Promise<void> {
-    const notice = new Notice("syncify: config upload - preparing preview...", 0);
+    const notice = new Notice("syncify: config upload started...", 0);
     try {
-      const dry = await this.engine.manualUploadConfig((p) => {
-        notice.setMessage(`syncify: preview - ${p.message}`);
-      }, true);
-      const lines = [
-        ...dry.plan.uploads.map((p) => `upload  ${p}`),
-        ...dry.plan.deletes.map((p) => `delete  ${p}`),
-      ];
-      notice.hide();
-      if (lines.length === 0) {
-        new Notice("syncify: config is already in sync with the server", 4000);
-        return;
-      }
-      const ok = await confirmList(
-        this.app,
-        `Config upload - ${dry.plan.uploads.length} upload(s), ${dry.plan.deletes.length} delete(s)`,
-        lines,
-      );
-      if (!ok) {
-        new Notice("Config upload cancelled");
-        return;
-      }
-      const prog = new Notice("syncify: uploading config...", 0);
       const r = await this.engine.manualUploadConfig((p) => {
-        prog.setMessage(`syncify: config upload - ${p.message}`);
+        notice.setMessage(`syncify: config upload - ${p.message}${p.total != null ? ` (${p.done}/${p.total})` : ""}`);
       });
-      prog.hide();
+      notice.hide();
       new Notice(`syncify: config upload complete - up:${r.uploaded} del:${r.deleted} skip:${r.skipped} err:${r.errors.length}`, 8000);
       for (const err of r.errors.slice(0, 3)) this.log.error(err);
     } catch (e) {
+      notice.hide();
       new Notice(`Config upload failed: ${errMsg(e)}`, 8000);
     }
   }
 
-  /** Manual config load: dry-run preview first, then confirm + execute. */
   async loadConfig(): Promise<void> {
-    const notice = new Notice("syncify: config load - preparing preview...", 0);
+    const notice = new Notice("syncify: config load started...", 0);
     try {
-      const dry = await this.engine.manualLoadConfig((p) => {
-        notice.setMessage(`syncify: preview - ${p.message}`);
-      }, true);
-      const lines = dry.plan.loads.map((p) => `load  ${p}`);
-      notice.hide();
-      if (lines.length === 0) {
-        new Notice("syncify: nothing to load from the server", 4000);
-        return;
-      }
-      const ok = await confirmList(this.app, `Config load - ${dry.plan.loads.length} file(s) to overwrite`, lines);
-      if (!ok) {
-        new Notice("Config load cancelled");
-        return;
-      }
-      const prog = new Notice("syncify: loading config...", 0);
       const r = await this.engine.manualLoadConfig((p) => {
-        prog.setMessage(`syncify: config load - ${p.message}`);
+        notice.setMessage(`syncify: config load - ${p.message}${p.total != null ? ` (${p.done}/${p.total})` : ""}`);
       });
-      prog.hide();
+      notice.hide();
       new Notice(`syncify: config load complete - got:${r.loaded} del:${r.deleted} skip:${r.skipped} err:${r.errors.length}`, 8000);
       for (const err of r.errors.slice(0, 3)) this.log.error(err);
     } catch (e) {
+      notice.hide();
       new Notice(`Config load failed: ${errMsg(e)}`, 8000);
     }
   }

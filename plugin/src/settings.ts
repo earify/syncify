@@ -283,7 +283,7 @@ export class SyncifySettingTab extends PluginSettingTab {
         }),
       );
 
-    new Setting(containerEl).setName("Config folder (.obsidian)").setHeading();
+    new Setting(containerEl).setName(`Config folder (${this.app.vault.configDir})`).setHeading();
 
     new Setting(containerEl)
       .setName("WiFi-only auto sync (mobile)")

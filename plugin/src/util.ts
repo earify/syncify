@@ -64,7 +64,7 @@ export function base64ToBuf(b64: string): ArrayBuffer {
 
 /** UTF-8 string -> ArrayBuffer. */
 export function strToBuf(s: string): ArrayBuffer {
-  return new TextEncoder().encode(s).slice().buffer as ArrayBuffer;
+  return new TextEncoder().encode(s).slice().buffer;
 }
 
 /** Type predicate: narrow an unknown value to a string-keyed record. */

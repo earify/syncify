@@ -10,6 +10,7 @@ import {
   conflictPathFor,
   ensureDir,
   errMsg,
+  isRecord,
   parentDir,
   sha256Hex,
 } from "./util";
@@ -101,10 +102,10 @@ export class SyncEngine {
     try {
       if (await this.app.vault.adapter.exists(this.configManifestPath)) {
         const raw = await this.app.vault.adapter.read(this.configManifestPath);
-        const parsed = JSON.parse(raw);
-        this.configManifest = Array.isArray(parsed)
-          ? parsed.filter((x): x is string => typeof x === "string")
-          : [];
+        const parsed: unknown = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          this.configManifest = parsed.filter((x): x is string => typeof x === "string");
+        }
       }
     } catch {
       this.configManifest = [];
@@ -1036,9 +1037,12 @@ export class SyncEngine {
       }
       throw e;
     }
-    let bundle: { files?: Array<{ path: string; b64?: string }> };
+    let bundle: { files?: Array<{ path: string; b64?: string }> } = {};
     try {
-      bundle = JSON.parse(new TextDecoder().decode(dl.data));
+      const parsed: unknown = JSON.parse(new TextDecoder().decode(dl.data));
+      if (isRecord(parsed) && Array.isArray(parsed.files)) {
+        bundle = parsed as { files?: Array<{ path: string; b64?: string }> };
+      }
     } catch (e) {
       throw new Error(`config snapshot is corrupted: ${errMsg(e)}`);
     }

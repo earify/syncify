@@ -1,4 +1,4 @@
-import { App, ItemView, Notice, Setting, WorkspaceLeaf } from "obsidian";
+import { ItemView, Notice, Setting, WorkspaceLeaf } from "obsidian";
 import type SyncifyPlugin from "./main";
 import { errMsg } from "./util";
 
@@ -81,7 +81,7 @@ export class TrashListView extends ItemView {
     try {
       entries = await this.plugin.client.listTrash();
     } catch (e) {
-      list.createEl("div", { text: `Failed to list trash: ${errMsg(e)}`, cls: "mod-warning" });
+      list.createDiv({ text: `Failed to list trash: ${errMsg(e)}`, cls: "mod-warning" });
       return;
     }
     entries.sort((a, b) => b.deletedAt - a.deletedAt);
@@ -90,7 +90,7 @@ export class TrashListView extends ItemView {
     const shown = q ? entries.filter((e) => e.path.toLowerCase().includes(q)) : entries;
 
     if (shown.length === 0) {
-      list.createEl("div", { text: "No matching trashed files." });
+      list.createDiv({ text: "No matching trashed files." });
       return;
     }
 
@@ -101,16 +101,18 @@ export class TrashListView extends ItemView {
       row.createDiv({ text: `deleted ${date} - ${t.size} bytes`, cls: "syncify-trash-meta" });
 
       const restoreBtn = row.createEl("button", { text: "Restore" });
-      restoreBtn.addEventListener("click", async () => {
-        restoreBtn.disabled = true;
-        try {
-          await this.plugin.client.restoreFromTrash(t.path);
-          new Notice(`Restored ${t.path} on the server; it will sync down shortly`);
-          row.remove();
-        } catch (err) {
-          new Notice(`Restore failed: ${errMsg(err)}`, 8000);
-          restoreBtn.disabled = false;
-        }
+      restoreBtn.addEventListener("click", () => {
+        void (async () => {
+          restoreBtn.disabled = true;
+          try {
+            await this.plugin.client.restoreFromTrash(t.path);
+            new Notice(`Restored ${t.path} on the server; it will sync down shortly`);
+            row.remove();
+          } catch (err) {
+            new Notice(`Restore failed: ${errMsg(err)}`, 8000);
+            restoreBtn.disabled = false;
+          }
+        })();
       });
     }
   }

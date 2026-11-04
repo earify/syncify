@@ -1,4 +1,4 @@
-import { App, ItemView, Notice, Setting, TFile, WorkspaceLeaf } from "obsidian";
+import { ItemView, Notice, Setting, TFile, WorkspaceLeaf } from "obsidian";
 import type SyncifyPlugin from "./main";
 import { errMsg } from "./util";
 
@@ -72,7 +72,7 @@ export class ConflictListView extends ItemView {
 
     const entries = await this.scan();
     if (entries.length === 0) {
-      contentEl.createEl("div", {
+      contentEl.createDiv({
         text: "No conflict copies. Conflicted files appear here after syncs where both sides changed.",
       });
       return;
@@ -85,37 +85,43 @@ export class ConflictListView extends ItemView {
       const actions = row.createDiv("syncify-conflict-actions");
 
       const restoreBtn = actions.createEl("button", { text: "Restore this version" });
-      restoreBtn.addEventListener("click", async () => {
-        restoreBtn.disabled = true;
-        try {
-          const buf = await this.plugin.engine.readBinary(e.conflictPath);
-          await this.plugin.engine.writeBinary(e.originalPath, buf);
-          await this.plugin.engine.trashLocalFile(e.conflictPath);
-          new Notice(`Restored ${e.originalPath}`);
-          await this.render();
-        } catch (err) {
-          new Notice(`Restore failed: ${errMsg(err)}`, 8000);
-          restoreBtn.disabled = false;
-        }
+      restoreBtn.addEventListener("click", () => {
+        void (async () => {
+          restoreBtn.disabled = true;
+          try {
+            const buf = await this.plugin.engine.readBinary(e.conflictPath);
+            await this.plugin.engine.writeBinary(e.originalPath, buf);
+            await this.plugin.engine.trashLocalFile(e.conflictPath);
+            new Notice(`Restored ${e.originalPath}`);
+            await this.render();
+          } catch (err) {
+            new Notice(`Restore failed: ${errMsg(err)}`, 8000);
+            restoreBtn.disabled = false;
+          }
+        })();
       });
 
       const openBtn = actions.createEl("button", { text: "Open" });
-      openBtn.addEventListener("click", async () => {
-        const file = this.app.vault.getAbstractFileByPath(e.conflictPath);
-        if (file instanceof TFile) await this.app.workspace.getLeaf("tab").openFile(file);
+      openBtn.addEventListener("click", () => {
+        void (async () => {
+          const file = this.app.vault.getAbstractFileByPath(e.conflictPath);
+          if (file instanceof TFile) await this.app.workspace.getLeaf("tab").openFile(file);
+        })();
       });
 
       const discardBtn = actions.createEl("button", { text: "Discard", cls: "mod-warning" });
-      discardBtn.addEventListener("click", async () => {
-        discardBtn.disabled = true;
-        try {
-          await this.plugin.engine.trashLocalFile(e.conflictPath);
-          new Notice("Conflict copy discarded");
-          await this.render();
-        } catch (err) {
-          new Notice(`Discard failed: ${errMsg(err)}`, 8000);
-          discardBtn.disabled = false;
-        }
+      discardBtn.addEventListener("click", () => {
+        void (async () => {
+          discardBtn.disabled = true;
+          try {
+            await this.plugin.engine.trashLocalFile(e.conflictPath);
+            new Notice("Conflict copy discarded");
+            await this.render();
+          } catch (err) {
+            new Notice(`Discard failed: ${errMsg(err)}`, 8000);
+            discardBtn.disabled = false;
+          }
+        })();
       });
     }
   }
