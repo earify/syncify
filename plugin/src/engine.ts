@@ -675,7 +675,33 @@ export class SyncEngine {
       return;
     }
 
-    // both diverged -> conflict
+    // Both sides diverged: the side with the newest edit time wins.
+    // (within the tie window we keep the conflict copy as a safety net)
+    const serverTime = c.mtime ?? c.createdAt ?? 0;
+    const NEAR_TIE_MS = 120000;
+    if (local.mtime > serverTime + NEAR_TIE_MS) {
+      this.log.warn(`diverged ${key}: local is newer (${new Date(local.mtime).toISOString()} vs server ${new Date(serverTime).toISOString()}); keeping local version`);
+      report.skipped++;
+      return;
+    }
+    if (serverTime > local.mtime + NEAR_TIE_MS) {
+      await this.throttle();
+      const dl = await this.client.download(c.path);
+      if (c.hash && dl.hash && dl.hash !== c.hash) {
+        this.log.warn(`download hash mismatch for ${key}; will retry next sync`);
+      }
+      await this.writeBinary(key, dl.data);
+      this.index.files[key] = {
+        version: dl.version || c.version,
+        hash: dl.hash || c.hash || "",
+        size: dl.data.byteLength,
+        mtime: Date.now(),
+      };
+      report.pulled++;
+      return;
+    }
+
+    // times too close to decide safely -> conflict copy
     await this.handlePullConflict(key, localBuf, localHash, c, report);
   }
 
