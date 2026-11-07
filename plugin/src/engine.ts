@@ -574,6 +574,22 @@ export class SyncEngine {
           await ensureDir(this.app, parentDir(toKey));
           await this.app.vault.adapter.writeBinary(toKey, data);
           await this.app.vault.adapter.remove(fromKey);
+        } else if (!(await this.localExists(toKey))) {
+          // Source no longer exists on this device (fresh install, stale index,
+          // or move applied out of order): pull the destination directly from
+          // the server so it is not silently dropped.
+          await this.throttle();
+          const dl = await this.client.download(c.path);
+          await ensureDir(this.app, parentDir(toKey));
+          await this.writeBinary(toKey, dl.data);
+          this.index.files[toKey] = {
+            version: dl.version || c.version,
+            hash: dl.hash || c.hash || "",
+            size: dl.data.byteLength,
+            mtime: (await this.localStat(toKey))?.mtime ?? Date.now(),
+          };
+          report.pulled++;
+          return;
         } else {
           report.skipped++;
           return;
